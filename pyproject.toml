@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audio2score"
-version = "0.5.1"
-description = "Turn audio into editable sheet music; v0.5.1 adds Python 3.12+ and Transkun compatibility fixes."
+version = "0.6.0"
+description = "Audio-to-sheet-music pipeline with audio-validated piano transcription and adaptive score quantization."
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
-authors = [{name = "Audio2Score prototype"}]
+authors = [{name = "Thomas Fassih"}]
 dependencies = [
   "numpy>=2.0,<3",
   "scipy>=1.18,<2",
@@ -36,6 +36,7 @@ dev = ["pytest>=8,<10"]
 [project.scripts]
 audio2score = "audio2score.cli:main"
 audio2score-doctor = "audio2score.doctor:main"
+audio2score-compare = "audio2score.compare:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

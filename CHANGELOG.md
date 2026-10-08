@@ -1,35 +1,44 @@
 # Changelog
 
+## 0.6.0
+
+Accuracy/validation release.
+
+- Preserves the backend's raw unquantized piano transcription as `01-raw-transcription.mid`.
+- Adds an audio-validation stage before quantization.
+- Aligns MIDI attacks to the source recording with a narrow global scale/offset search.
+- Scores note hypotheses using octave-aware CQT pitch energy, attack gain, neighboring-pitch separation, and acoustic onset evidence.
+- Adds explicit harmonic/overtone probability for suspicious octave/partial detections.
+- Conservatively rejects clearly unsupported notes.
+- Adds conservative neighboring-pitch substitution when the source audio strongly supports a different semitone.
+- Searches for high-confidence missing note attacks in the source audio.
+- Writes `02-validated-performance.mid` in real seconds without score quantization.
+- Separates performance timing from score timing throughout the analysis JSON.
+- Adds adaptive context-aware score quantization using dynamic programming.
+- Adds `--quantizer adaptive|fixed` and validation controls.
+- Adds `--piano-midi-input` for testing any existing MIDI hypothesis through the full pipeline.
+- Adds the `audio2score-compare` command for standalone FLAC/MIDI diagnostics.
+- Writes validation HTML/JSON/CSV diagnostics.
+- Rerendering now prefers cached validated unquantized notes and requantizes them for the requested score output.
+- Retains the v0.5.1 Python 3.12+ and Transkun compatibility fixes.
+
 ## 0.5.1
 
-Compatibility and install reliability release.
+Compatibility/reliability release.
 
-- Requires Python >=3.12 with no artificial upper bound.
-- Updated core dependency ranges for modern Python 3.12-3.14 environments.
-- Fixed Windows setup working-directory assumptions.
-- Added automatic Python selection and `-PythonVersion` override.
-- Setup recreates stale `.venv` by default and verifies the generated CLI.
-- Added `audio2score-doctor`.
-- Added automatic Transkun 2.0.1 compatibility patch:
-  - removes runtime dependency on `pkg_resources`;
-  - replaces pydub/from_mp3 audio decoding with SoundFile;
-  - avoids Python 3.13+ `audioop` failure for Audio2Score-driven Transkun runs.
-- Added `audioop-lts` marker for Python 3.13+ to the neural extra as a safety
-  net for other pydub code paths.
-- Transkun is now invoked through the active Python interpreter instead of
-  relying on a PATH-resolved executable.
-- Added explicit Python 3.14 TorchScript warning and actionable failure hint.
-- Removed Basic Pitch from the supported Python-3.12+ melody backend list;
-  non-piano lead extraction uses pYIN in this release.
-- Added compatibility regression tests.
+- Python 3.12+ core support.
+- Transkun compatibility patch for obsolete `pkg_resources` resource lookup.
+- Transkun FLAC loader patched to use SoundFile instead of the pydub/audioop path.
+- Robust Windows setup and console-launcher verification.
+- `audio2score-doctor` installation diagnostics.
 
 ## 0.5.0
 
-- Phrase detection and MusicXML slurs.
-- Dynamic marks and crescendo/diminuendo wedges.
-- Sustain pedal planning in MusicXML and MIDI CC64.
-- Section/rehearsal detection.
-- Pickup handling.
+Engraving/performance release.
+
 - Global melody tracking.
-- Faithful, Intermediate, and Easy piano arrangements.
-- Cached analysis rerendering.
+- Phrase/slur detection.
+- Dynamics and wedges.
+- Pedal markings and MIDI CC64.
+- Section markers.
+- Cached rerendering.

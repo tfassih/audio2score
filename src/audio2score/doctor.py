@@ -56,10 +56,13 @@ def main() -> int:
             print(f"ERROR: Transkun compatibility check failed: {exc}")
             return 2
 
-    launcher = Path(sys.executable).parent / ("audio2score.exe" if sys.platform == "win32" else "audio2score")
+    exe_suffix = ".exe" if sys.platform == "win32" else ""
+    launcher = Path(sys.executable).parent / f"audio2score{exe_suffix}"
+    compare_launcher = Path(sys.executable).parent / f"audio2score-compare{exe_suffix}"
     print(f"Launcher:     {launcher if launcher.exists() else 'not found'}")
-    if not launcher.exists():
-        print("ERROR: console launcher is missing. Re-run setup_windows.ps1.")
+    print(f"Comparator:   {compare_launcher if compare_launcher.exists() else 'not found'}")
+    if not launcher.exists() or not compare_launcher.exists():
+        print("ERROR: one or more console launchers are missing. Re-run setup_windows.ps1.")
         return 3
 
     print("\nCore installation looks good.")

@@ -141,6 +141,6 @@ def transcribe_melody(
     if backend not in {"auto", "pyin"}:
         raise ValueError(f"Unknown melody backend: {backend}")
     # Basic Pitch currently targets older Python releases, while Audio2Score
-    # v0.5.1 deliberately targets Python 3.12+.  pYIN is therefore the
+    # v0.6.0 deliberately targets Python 3.12+.  pYIN is therefore the
     # supported lead-melody backend in this environment.
     return transcribe_pyin(y, sr, fmin=fmin, fmax=fmax), "pyin"

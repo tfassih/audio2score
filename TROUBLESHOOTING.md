@@ -1,4 +1,4 @@
-# Audio2Score v0.5.1 troubleshooting
+# Audio2Score v0.6.0 troubleshooting
 
 ## `audio2score` is not recognized
 
@@ -16,7 +16,7 @@ not generated.
 
 ## Transkun says `No module named pkg_resources`
 
-v0.5.1 patches this automatically. Run:
+v0.6.0 patches this automatically. Run:
 
 ```powershell
 python -m audio2score.compat

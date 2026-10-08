@@ -25,7 +25,7 @@ def _midi_velocity(peak_db: float, strongest_db: float) -> int:
     return int(round(46 + 60 * rel))
 
 
-def _read_midi_notes(midi_path: str | Path, source: str) -> list[NoteEvent]:
+def read_midi_notes(midi_path: str | Path, source: str = "midi") -> list[NoteEvent]:
     pm = pretty_midi.PrettyMIDI(str(midi_path))
     notes: list[NoteEvent] = []
     for instrument in pm.instruments:
@@ -50,10 +50,11 @@ def _read_midi_notes(midi_path: str | Path, source: str) -> list[NoteEvent]:
 def transcribe_with_transkun(
     audio_path: str | Path,
     device: str = "cpu",
+    raw_midi_path: str | Path | None = None,
 ) -> list[NoteEvent]:
     """Run the optional Transkun backend in the active Python environment.
 
-    Audio2Score v0.5.1 patches the published Transkun 2.0.1 compatibility
+    Audio2Score v0.6.0 patches the published Transkun 2.0.1 compatibility
     issues before launch (pkg_resources and the pydub/audioop loader), then
     invokes ``python -m transkun.transcribe`` so it always uses this venv.
     """
@@ -89,7 +90,11 @@ def transcribe_with_transkun(
             raise RuntimeError(f"Transkun exited with code {exc.returncode}.{hint}") from exc
         if not midi_path.exists():
             raise RuntimeError("Transkun completed without producing MIDI")
-        return _read_midi_notes(midi_path, "transkun")
+        if raw_midi_path is not None:
+            dst = Path(raw_midi_path)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(midi_path, dst)
+        return read_midi_notes(midi_path, "transkun")
 
 
 def transcribe_piano_polyphonic_spectral(
@@ -367,12 +372,13 @@ def transcribe_piano_polyphonic(
     sr: int,
     backend: str = "auto",
     device: str = "cpu",
+    raw_midi_path: str | Path | None = None,
 ) -> tuple[list[NoteEvent], str]:
     if backend not in {"auto", "transkun", "spectral"}:
         raise ValueError(f"Unsupported piano backend: {backend}")
     if backend in {"auto", "transkun"}:
         try:
-            notes = transcribe_with_transkun(audio_path, device=device)
+            notes = transcribe_with_transkun(audio_path, device=device, raw_midi_path=raw_midi_path)
             return assign_piano_hands(notes), "transkun"
         except Exception as exc:
             if backend == "transkun":

@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="audio2score",
         description=(
             "Convert recorded music into editable MusicXML/MIDI; "
-            "v0.5.1 adds Python 3.12+ and Transkun compatibility fixes on top of v0.5 engraving/arranging."
+            "v0.6 validates raw piano MIDI against the source audio before score quantization."
         ),
     )
     p.add_argument("input", help="Input audio file (FLAC/WAV/MP3/etc.)")
@@ -23,10 +23,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title", default=None)
     p.add_argument("--composer", default="")
     p.add_argument("--meter", default="4/4", help="Meter, e.g. 4/4 or 3/4")
-    p.add_argument("--grid", type=int, choices=[1,2,3,4,6,8], default=4,
-                   help="Subdivisions per quarter-note beat; 4 = sixteenths")
+    p.add_argument("--grid", type=int, choices=[1,2,4,8], default=4,
+                   help="Maximum score subdivision per quarter-note beat; 4 permits sixteenths")
+    p.add_argument("--quantizer", choices=["adaptive","fixed"], default="adaptive",
+                   help="Score quantization. adaptive preserves performance timing until notation and prefers simpler rhythms.")
     p.add_argument("--melody-backend", choices=["auto","pyin"], default="auto",
-                   help="Lead-melody engine for non-piano audio; v0.5.1 uses pYIN on Python 3.12+.")
+                   help="Lead-melody engine for non-piano audio; v0.6.0 uses pYIN on Python 3.12+.")
     p.add_argument("--piano", action="store_true",
                    help="Solo-piano mode: polyphonic two-hand grand-staff transcription")
     p.add_argument("--piano-backend", choices=["auto","transkun","spectral"], default="auto",
@@ -35,6 +37,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Device for optional neural piano backend")
     p.add_argument("--arrangement", choices=["all","faithful","intermediate","easy"],
                    default="all", help="Piano output level; default emits all three arrangements")
+    p.add_argument("--piano-midi-input", default=None,
+                   help="Use an existing raw piano MIDI hypothesis instead of running Transkun/spectral transcription")
+    p.add_argument("--no-validation", action="store_true",
+                   help="Skip v0.6 FLAC-vs-MIDI audio validation/correction")
+    p.add_argument("--validation-strength", choices=["conservative","balanced","aggressive"], default="balanced",
+                   help="How readily v0.6 rejects/corrects weak note hypotheses")
+    p.add_argument("--no-add-missing", action="store_true",
+                   help="Do not insert high-confidence missing-note hypotheses found in the audio")
+    p.add_argument("--no-pitch-correction", action="store_true",
+                   help="Do not replace weak MIDI pitches with strongly supported neighboring semitones")
     p.add_argument("--no-engraving", action="store_true",
                    help="Disable v0.5 dynamics, phrase slurs, pedal and section markers")
     p.add_argument("--analysis-cache", default=None,
@@ -67,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
                 engraving=not args.no_engraving,
                 title=args.title,
                 composer=args.composer if args.composer else None,
+                quantizer=args.quantizer,
+                grid=args.grid,
             )
         else:
             result = transcribe_song(
@@ -84,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
                 device=args.device,
                 arrangement=args.arrangement,
                 engraving=not args.no_engraving,
+                validation=not args.no_validation,
+                validation_strength=args.validation_strength,
+                add_missing=not args.no_add_missing,
+                substitute_pitches=not args.no_pitch_correction,
+                quantizer=args.quantizer,
+                piano_midi_input=args.piano_midi_input,
             )
     except Exception as exc:
         logging.exception("Transcription failed") if args.verbose else logging.error(

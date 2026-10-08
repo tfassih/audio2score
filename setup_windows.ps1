@@ -24,7 +24,7 @@ function Invoke-Checked {
 }
 
 Write-Host ""
-Write-Host "Audio2Score v0.5.1 setup"
+Write-Host "Audio2Score v0.6 setup"
 Write-Host "========================="
 Write-Host ""
 
@@ -61,7 +61,7 @@ $DetectedBits = $Fields[1]
 $DetectedExe = $Fields[2]
 
 if ($DetectedVersion -lt [version]"3.12.0") {
-    throw "Audio2Score v0.5.1 requires Python 3.12 or newer. Found $DetectedVersion."
+    throw "Audio2Score v0.6 requires Python 3.12 or newer. Found $DetectedVersion."
 }
 if ($DetectedBits -ne "64") {
     throw "Audio2Score requires 64-bit Python. Found $DetectedBits-bit Python at $DetectedExe."
@@ -114,8 +114,12 @@ if ($PianoNeural -or $Full) {
 }
 
 $Launcher = Join-Path $PSScriptRoot ".venv\Scripts\audio2score.exe"
+$CompareLauncher = Join-Path $PSScriptRoot ".venv\Scripts\audio2score-compare.exe"
 if (-not (Test-Path $Launcher)) {
     throw "Audio2Score imported but the console launcher was not generated: $Launcher"
+}
+if (-not (Test-Path $CompareLauncher)) {
+    throw "Audio2Score comparator launcher was not generated: $CompareLauncher"
 }
 
 Invoke-Checked "Running installation doctor..." $VenvPython @("-m", "audio2score.doctor")
@@ -137,3 +141,7 @@ Write-Host '  audio2score "C:\path\to\piano.flac" --piano --piano-backend transk
 Write-Host ""
 Write-Host "Force the built-in backend:"
 Write-Host '  audio2score "C:\path\to\piano.flac" --piano --piano-backend spectral'
+
+Write-Host "Compare a MIDI against its source audio:"
+Write-Host '  audio2score-compare "C:\path\to\piano.flac" "C:\path\to\transcription.mid"'
+Write-Host ""

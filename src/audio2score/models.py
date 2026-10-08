@@ -16,6 +16,13 @@ class NoteEvent:
     velocity: int = 80
     hand: str | None = None
     role: str | None = None
+    audio_support: float | None = None
+    onset_support: float | None = None
+    pitch_margin: float | None = None
+    harmonic_probability: float | None = None
+    validation_status: str | None = None
+    validation_reason: str | None = None
+    original_pitch: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

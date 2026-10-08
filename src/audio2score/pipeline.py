@@ -3,22 +3,29 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import logging
+import shutil
 
 from .audio import load_audio, separate_vocals
 from .rhythm import analyze_rhythm
 from .tonal import chroma_features, estimate_key, detect_chords, detect_chords_barwise
 from .melody import transcribe_melody
-from .piano import transcribe_piano_polyphonic
-from .quantize import quantize_notes, quantize_polyphonic_notes
+from .piano import transcribe_piano_polyphonic, assign_piano_hands, read_midi_notes
+from .quantize import (
+    quantize_notes,
+    quantize_polyphonic_notes,
+    adaptive_quantize_polyphonic_notes,
+)
 from .arrange import build_arrangements
 from .engraving import build_engraving_plan, plan_for_variant
+from .validation import validate_piano_transcription, write_validation_artifacts
 from .export import (
     write_musicxml, write_midi, write_piano_musicxml, write_piano_midi,
-    export_pdf_with_musescore,
+    write_performance_midi, export_pdf_with_musescore,
 )
 from .music import chord_name, pc_name, key_fifths
 
 log = logging.getLogger(__name__)
+VERSION = "0.6.0"
 
 
 def _export_piano_variant(
@@ -66,6 +73,9 @@ def _note_from_dict(d: dict):
     fields = {
         "start_sec", "end_sec", "midi_pitch", "confidence", "source",
         "start_beat", "end_beat", "velocity", "hand", "role",
+        "audio_support", "onset_support", "pitch_margin",
+        "harmonic_probability", "validation_status", "validation_reason",
+        "original_pitch",
     }
     return NoteEvent(**{k: v for k, v in d.items() if k in fields})
 
@@ -74,6 +84,18 @@ def _chord_from_dict(d: dict):
     from .models import ChordEvent
     fields = {"start_beat", "end_beat", "root_pc", "quality", "confidence", "bass_pc"}
     return ChordEvent(**{k: v for k, v in d.items() if k in fields})
+
+
+def _quantize_piano(notes, beat_times, *, quantizer: str, grid: int):
+    if quantizer == "adaptive":
+        return adaptive_quantize_polyphonic_notes(
+            notes, beat_times, max_subdivisions=grid
+        )
+    if quantizer == "fixed":
+        return quantize_polyphonic_notes(
+            notes, beat_times, subdivisions_per_beat=grid
+        )
+    raise ValueError(f"Unsupported quantizer: {quantizer}")
 
 
 def rerender_from_analysis(
@@ -86,12 +108,13 @@ def rerender_from_analysis(
     engraving: bool = True,
     title: str | None = None,
     composer: str | None = None,
+    quantizer: str = "adaptive",
+    grid: int = 4,
 ) -> dict:
-    """Rebuild v0.5 arrangements/engraving from a prior Audio2Score JSON.
+    """Rebuild v0.6 score outputs from a prior analysis without retranscribing.
 
-    v0.5 caches the pre-arrangement quantized notes. Older caches (v0.4 and
-    earlier) do not contain them, so their faithful notes are accepted as a
-    conservative fallback input. This makes iteration dramatically faster.
+    v0.6 prefers cached *validated unquantized* notes, then quantizes only for
+    notation. Older caches fall back to quantized/faithful notes.
     """
     input_path = Path(input_path).resolve()
     cache_path = Path(analysis_cache).resolve()
@@ -103,12 +126,19 @@ def rerender_from_analysis(
         raise FileNotFoundError(cache_path)
 
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    source_note_dicts = cached.get("quantized_notes") or cached.get("notes") or []
-    if not source_note_dicts:
-        raise ValueError("Analysis cache contains no reusable piano notes")
-    source_kind = "quantized" if cached.get("quantized_notes") else "faithful-fallback"
+    beat_times = [float(x) for x in cached.get("beat_times", [])]
+    validated_dicts = cached.get("validated_notes") or []
+    if validated_dicts and beat_times:
+        source_notes = [_note_from_dict(x) for x in validated_dicts]
+        quantized = _quantize_piano(source_notes, beat_times, quantizer=quantizer, grid=grid)
+        source_kind = "validated-unquantized"
+    else:
+        source_note_dicts = cached.get("quantized_notes") or cached.get("notes") or []
+        if not source_note_dicts:
+            raise ValueError("Analysis cache contains no reusable piano notes")
+        quantized = [_note_from_dict(x) for x in source_note_dicts]
+        source_kind = "quantized-legacy"
 
-    source_notes = [_note_from_dict(x) for x in source_note_dicts]
     chords = [_chord_from_dict(x) for x in cached.get("chords", [])]
     key_data = cached.get("key") or {}
     from .models import KeyEstimate
@@ -119,11 +149,10 @@ def rerender_from_analysis(
     )
     tempo_bpm = float(cached.get("tempo_bpm", 120.0))
     meter = str(cached.get("meter", "4/4"))
-    beat_times = [float(x) for x in cached.get("beat_times", [])]
     title = title or str(cached.get("title") or input_path.stem)
     composer = composer if composer is not None else str(cached.get("composer") or "")
 
-    arrangements = build_arrangements(source_notes, chords)
+    arrangements = build_arrangements(quantized, chords)
     chords = arrangements.chords
     faithful = arrangements.faithful
 
@@ -154,13 +183,14 @@ def rerender_from_analysis(
     if "faithful" in outputs:
         outputs["musicxml"] = outputs["faithful"]["musicxml"]
         outputs["midi"] = outputs["faithful"]["midi"]
+        outputs["score_midi"] = outputs["faithful"]["midi"]
         if "pdf" in outputs["faithful"]:
             outputs["pdf"] = outputs["faithful"].get("pdf")
 
     prefer_flats = key_fifths(key.tonic_pc, key.mode) < 0
     data = {
-        "version": "0.5.0",
-        "mode": "piano-engraved-arrangements",
+        "version": VERSION,
+        "mode": "piano-validated-arrangements",
         "input": str(input_path),
         "source_analysis_cache": str(cache_path),
         "cache_input_kind": source_kind,
@@ -174,10 +204,15 @@ def rerender_from_analysis(
         },
         "beat_times": beat_times,
         "backend": str(cached.get("backend", "cached")),
-        "raw_note_count": int(cached.get("raw_note_count", len(source_notes))),
-        "quantized_note_count": len(source_notes),
-        "quantized_notes": [n.to_dict() for n in source_notes],
+        "quantizer": quantizer,
+        "raw_note_count": int(cached.get("raw_note_count", len(quantized))),
+        "validated_note_count": int(cached.get("validated_note_count", len(validated_dicts) or len(quantized))),
+        "quantized_note_count": len(quantized),
+        "raw_notes": cached.get("raw_notes"),
+        "validated_notes": cached.get("validated_notes"),
+        "quantized_notes": [n.to_dict() for n in quantized],
         "notes": [n.to_dict() for n in faithful],
+        "validation": cached.get("validation"),
         "hand_counts": {
             "right": sum(1 for n in faithful if n.hand == "right"),
             "left": sum(1 for n in faithful if n.hand == "left"),
@@ -211,7 +246,6 @@ def rerender_from_analysis(
     return data
 
 
-
 def transcribe_song(
     input_path: str | Path,
     output_dir: str | Path,
@@ -231,6 +265,12 @@ def transcribe_song(
     device: str = "cpu",
     arrangement: str = "all",
     engraving: bool = True,
+    validation: bool = True,
+    validation_strength: str = "balanced",
+    add_missing: bool = True,
+    substitute_pitches: bool = True,
+    quantizer: str = "adaptive",
+    piano_midi_input: str | Path | None = None,
 ) -> dict:
     input_path = Path(input_path).resolve()
     if not input_path.exists():
@@ -239,6 +279,7 @@ def transcribe_song(
     output_dir.mkdir(parents=True, exist_ok=True)
     title = title or input_path.stem
     stem_dir = output_dir / "stems"
+    base = input_path.stem
 
     analysis_sr = 22050
     full_y, sr = load_audio(input_path, sr=analysis_sr)
@@ -265,6 +306,10 @@ def transcribe_song(
 
     chroma = chroma_features(harmony_y, sr, fast=piano)
     engraving_plan = None
+    validation_result = None
+    validation_outputs: dict[str, str] = {}
+    raw_midi_path: Path | None = None
+    validated_midi_path: Path | None = None
 
     if piano:
         preliminary = detect_chords_barwise(
@@ -274,11 +319,55 @@ def transcribe_song(
         chords = detect_chords_barwise(
             chroma, sr, rhythm.beat_times, beats_per_bar=4, key=key
         )
-        raw_notes, backend_used = transcribe_piano_polyphonic(
-            input_path, melody_y, sr, backend=piano_backend, device=device
+
+        raw_midi_path = output_dir / f"{base}.01-raw-transcription.mid"
+        if piano_midi_input:
+            midi_input = Path(piano_midi_input).resolve()
+            if not midi_input.exists():
+                raise FileNotFoundError(midi_input)
+            shutil.copy2(midi_input, raw_midi_path)
+            raw_notes = assign_piano_hands(read_midi_notes(midi_input, source="external-piano-midi"))
+            backend_used = "external-midi"
+        else:
+            raw_notes, backend_used = transcribe_piano_polyphonic(
+                input_path, melody_y, sr, backend=piano_backend, device=device,
+                raw_midi_path=raw_midi_path,
+            )
+            if not raw_midi_path.exists():
+                # Spectral backend has no native MIDI file, so preserve its exact
+                # unquantized NoteEvent representation as the raw artifact.
+                write_performance_midi(raw_midi_path, raw_notes, rhythm.tempo_bpm)
+
+        raw_notes = assign_piano_hands(raw_notes)
+
+        if validation:
+            validation_result = validate_piano_transcription(
+                full_y, sr, raw_notes, rhythm.beat_times,
+                key=key, chords=chords,
+                strength=validation_strength,
+                add_missing=add_missing,
+                substitute_pitches=substitute_pitches,
+            )
+            validated_notes = assign_piano_hands(validation_result.notes)
+            validation_outputs = write_validation_artifacts(validation_result, output_dir, base)
+            log.info(
+                "Audio validation: %d raw -> %d validated (%d rejected, %d corrected, %d added)",
+                len(raw_notes), len(validated_notes),
+                validation_result.summary.rejected_notes,
+                validation_result.summary.corrected_pitches,
+                validation_result.summary.added_missing_notes,
+            )
+        else:
+            validated_notes = assign_piano_hands(raw_notes)
+
+        validated_midi_path = output_dir / f"{base}.02-validated-performance.mid"
+        write_performance_midi(
+            validated_midi_path, validated_notes, rhythm.tempo_bpm,
+            source_midi=raw_midi_path,
         )
-        quantized = quantize_polyphonic_notes(
-            raw_notes, rhythm.beat_times, subdivisions_per_beat=grid
+
+        quantized = _quantize_piano(
+            validated_notes, rhythm.beat_times, quantizer=quantizer, grid=grid
         )
         arrangements = build_arrangements(quantized, chords)
         chords = arrangements.chords
@@ -294,10 +383,12 @@ def transcribe_song(
             melody_path, melody_y, sr,
             backend=melody_backend, fmin=fmin, fmax=fmax,
         )
+        validated_notes = raw_notes
         notes = quantize_notes(
             raw_notes, rhythm.beat_times, subdivisions_per_beat=grid
         )
         arrangements = None
+        quantized = notes
 
     prefer_flats = key_fifths(key.tonic_pc, key.mode) < 0
     log.info(
@@ -305,16 +396,18 @@ def transcribe_song(
         pc_name(key.tonic_pc, prefer_flats), key.mode,
     )
     log.info(
-        "Backend: %s; %d raw -> %d primary notes",
+        "Backend: %s; %d raw -> %d primary score notes",
         backend_used, len(raw_notes), len(notes),
     )
 
-    base = input_path.stem
     analysis_json = output_dir / f"{base}.analysis.json"
     outputs: dict = {}
     arrangement_counts: dict[str, int] = {}
 
     if piano:
+        outputs["raw_transcription_midi"] = str(raw_midi_path)
+        outputs["validated_performance_midi"] = str(validated_midi_path)
+        outputs.update(validation_outputs)
         allowed = {"all", "faithful", "intermediate", "easy"}
         if arrangement not in allowed:
             raise ValueError(f"Unsupported arrangement: {arrangement}")
@@ -333,6 +426,7 @@ def transcribe_song(
         if "faithful" in outputs:
             outputs["musicxml"] = outputs["faithful"]["musicxml"]
             outputs["midi"] = outputs["faithful"]["midi"]
+            outputs["score_midi"] = outputs["faithful"]["midi"]
             if "pdf" in outputs["faithful"]:
                 outputs["pdf"] = outputs["faithful"].get("pdf")
         arrangement_counts = {k: len(v) for k, v in variants.items()}
@@ -356,9 +450,20 @@ def transcribe_song(
                 outputs["pdf"] = None
                 outputs["pdf_error"] = str(exc)
 
+    validation_data = None
+    if validation_result:
+        validation_data = {
+            "strength": validation_strength,
+            "alignment": validation_result.alignment.to_dict(),
+            "summary": validation_result.summary.to_dict(),
+            "pitch_substitutions": validation_result.pitch_substitutions,
+            "rejected_notes": [n.to_dict() for n in validation_result.rejected],
+            "added_notes": [n.to_dict() for n in validation_result.added],
+        }
+
     data = {
-        "version": "0.5.0",
-        "mode": "piano-engraved-arrangements" if piano else "general",
+        "version": VERSION,
+        "mode": "piano-validated-arrangements" if piano else "general",
         "input": str(input_path),
         "title": title,
         "composer": composer,
@@ -371,10 +476,16 @@ def transcribe_song(
         "beat_times": rhythm.beat_times,
         "backend": backend_used,
         "separation": separation_info,
+        "quantizer": quantizer if piano else "fixed",
+        "grid": grid,
         "raw_note_count": len(raw_notes),
-        "quantized_note_count": len(quantized) if piano else len(notes),
+        "validated_note_count": len(validated_notes),
+        "quantized_note_count": len(quantized),
+        "raw_notes": [n.to_dict() for n in raw_notes] if piano else None,
+        "validated_notes": [n.to_dict() for n in validated_notes] if piano else None,
         "quantized_notes": [n.to_dict() for n in quantized] if piano else None,
         "notes": [n.to_dict() for n in notes],
+        "validation": validation_data,
         "hand_counts": {
             "right": sum(1 for n in notes if n.hand == "right"),
             "left": sum(1 for n in notes if n.hand == "left"),
