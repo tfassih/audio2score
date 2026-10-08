@@ -1,4 +1,4 @@
-# Audio2Score v0.1
+# Audio2Score v0.5
 
 Audio2Score turns recorded music into editable MusicXML and MIDI. 
 
