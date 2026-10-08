@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="audio2score",
         description=(
             "Convert recorded music into editable MusicXML/MIDI; "
-            "v0.5 adds phrase/dynamic/pedal/section engraving and more playable arrangements."
+            "v0.5.1 adds Python 3.12+ and Transkun compatibility fixes on top of v0.5 engraving/arranging."
         ),
     )
     p.add_argument("input", help="Input audio file (FLAC/WAV/MP3/etc.)")
@@ -25,7 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--meter", default="4/4", help="Meter, e.g. 4/4 or 3/4")
     p.add_argument("--grid", type=int, choices=[1,2,3,4,6,8], default=4,
                    help="Subdivisions per quarter-note beat; 4 = sixteenths")
-    p.add_argument("--melody-backend", choices=["auto","pyin","basic-pitch"], default="auto")
+    p.add_argument("--melody-backend", choices=["auto","pyin"], default="auto",
+                   help="Lead-melody engine for non-piano audio; v0.5.1 uses pYIN on Python 3.12+.")
     p.add_argument("--piano", action="store_true",
                    help="Solo-piano mode: polyphonic two-hand grand-staff transcription")
     p.add_argument("--piano-backend", choices=["auto","transkun","spectral"], default="auto",

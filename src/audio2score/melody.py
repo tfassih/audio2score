@@ -95,29 +95,6 @@ def transcribe_pyin(
     return _merge_notes(notes)
 
 
-def transcribe_basic_pitch(path: str | Path) -> list[NoteEvent]:
-    try:
-        from basic_pitch.inference import predict
-    except ImportError as exc:
-        raise RuntimeError("Basic Pitch is not installed.") from exc
-
-    _, _, events = predict(str(path))
-    notes = []
-    for event in events:
-        # Basic Pitch note event: start, end, pitch, amplitude, pitch_bends.
-        start, end, pitch, amplitude = event[:4]
-        notes.append(
-            NoteEvent(
-                float(start),
-                float(end),
-                int(pitch),
-                float(amplitude),
-                source="basic-pitch",
-            )
-        )
-    return reduce_to_monophonic(notes)
-
-
 def reduce_to_monophonic(notes: list[NoteEvent]) -> list[NoteEvent]:
     """Reduce a possibly polyphonic prediction to a plausible single lead line.
 
@@ -161,15 +138,9 @@ def transcribe_melody(
     fmin: str = "C2",
     fmax: str = "C7",
 ) -> tuple[list[NoteEvent], str]:
-    if backend not in {"auto", "pyin", "basic-pitch"}:
+    if backend not in {"auto", "pyin"}:
         raise ValueError(f"Unknown melody backend: {backend}")
-    if backend in {"auto", "basic-pitch"}:
-        try:
-            notes = transcribe_basic_pitch(path)
-            if notes:
-                return notes, "basic-pitch"
-        except Exception as exc:
-            if backend == "basic-pitch":
-                raise
-            log.warning("Basic Pitch unavailable/failed; falling back to pYIN: %s", exc)
+    # Basic Pitch currently targets older Python releases, while Audio2Score
+    # v0.5.1 deliberately targets Python 3.12+.  pYIN is therefore the
+    # supported lead-melody backend in this environment.
     return transcribe_pyin(y, sr, fmin=fmin, fmax=fmax), "pyin"

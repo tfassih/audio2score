@@ -4,6 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 import logging
 import shutil
+import sys
 import subprocess
 import tempfile
 
@@ -13,6 +14,7 @@ import pretty_midi
 from scipy.signal import find_peaks
 
 from .models import NoteEvent
+from .compat import patch_transkun
 
 log = logging.getLogger(__name__)
 
@@ -49,21 +51,42 @@ def transcribe_with_transkun(
     audio_path: str | Path,
     device: str = "cpu",
 ) -> list[NoteEvent]:
-    """Use the optional Transkun CLI if it is installed.
+    """Run the optional Transkun backend in the active Python environment.
 
-    Transkun is intentionally optional: v0.4 must remain runnable without a
-    heavyweight neural model. Install it separately, then select
-    --piano-backend transkun (or auto).
+    Audio2Score v0.5.1 patches the published Transkun 2.0.1 compatibility
+    issues before launch (pkg_resources and the pydub/audioop loader), then
+    invokes ``python -m transkun.transcribe`` so it always uses this venv.
     """
-    exe = shutil.which("transkun")
-    if not exe:
-        raise RuntimeError("Transkun executable not found on PATH")
+    patch = patch_transkun()
+    if not patch.installed:
+        raise RuntimeError(
+            "Transkun is not installed. Re-run setup_windows.ps1 with "
+            "-PianoNeural (or -Full)."
+        )
+
     with tempfile.TemporaryDirectory(prefix="audio2score-transkun-") as td:
         midi_path = Path(td) / "transkun.mid"
-        cmd = [exe, str(audio_path), str(midi_path)]
+        cmd = [
+            sys.executable,
+            "-m",
+            "transkun.transcribe",
+            str(audio_path),
+            str(midi_path),
+        ]
         if device:
             cmd += ["--device", device]
-        subprocess.run(cmd, check=True)
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as exc:
+            hint = ""
+            if sys.version_info >= (3, 14):
+                hint = (
+                    " Python 3.14 is supported by Audio2Score core, but "
+                    "Transkun/PyTorch TorchScript remains experimental on "
+                    "3.14; if the traceback mentions torch.jit, use Python "
+                    "3.12 or 3.13 for the neural backend."
+                )
+            raise RuntimeError(f"Transkun exited with code {exc.returncode}.{hint}") from exc
         if not midi_path.exists():
             raise RuntimeError("Transkun completed without producing MIDI")
         return _read_midi_notes(midi_path, "transkun")

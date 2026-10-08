@@ -1,1 +1,8 @@
-BENCHMARK_Faded.md
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+audio2score_output/
+*.egg-info/
+build/
+dist/
