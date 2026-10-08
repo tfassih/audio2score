@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -624,37 +625,79 @@ def write_performance_midi(
     pm.write(str(output_path))
     return output_path
 
+def _beat_to_seconds(
+    beat: float,
+    beat_times: list[float] | None,
+    tempo_bpm: float,
+) -> float:
+    """Map notated beat position back onto the performed timeline.
+
+    v0.7 wrote score MIDI with one average tempo, which accumulated more than a
+    second of drift in expressive piano recordings. v0.8 keeps quantized beat
+    locations for notation but renders them through the locally varying source
+    beat map for playback.
+    """
+    if beat_times and len(beat_times) >= 2:
+        bt = [float(x) for x in beat_times]
+        if beat <= 0:
+            period = bt[1] - bt[0]
+            return float(bt[0] + beat * period)
+        last_index = len(bt) - 1
+        if beat >= last_index:
+            period = bt[-1] - bt[-2]
+            return float(bt[-1] + (beat - last_index) * period)
+        lo = int(math.floor(beat))
+        frac = float(beat - lo)
+        return float(bt[lo] + frac * (bt[lo + 1] - bt[lo]))
+    return float(beat) * 60.0 / float(tempo_bpm)
+
+
 def write_piano_midi(
     output_path: str | Path,
     notes: list[NoteEvent],
     tempo_bpm: float,
     engraving_plan: EngravingPlan | None = None,
+    beat_times: list[float] | None = None,
+    preserve_source_durations: bool = False,
 ) -> Path:
     output_path = Path(output_path)
     pm = pretty_midi.PrettyMIDI(initial_tempo=float(tempo_bpm))
-    spb = 60.0 / float(tempo_bpm)
     rh = pretty_midi.Instrument(program=0, name="Right hand")
     lh = pretty_midi.Instrument(program=0, name="Left hand")
     for n in notes:
         if n.start_beat is None or n.end_beat is None:
             continue
-        s, e = n.start_beat*spb, n.end_beat*spb
+        s = _beat_to_seconds(float(n.start_beat), beat_times, tempo_bpm)
+        if (
+            preserve_source_durations
+            and n.end_sec > n.start_sec
+            and n.source
+            and not n.source.startswith("arranged-")
+        ):
+            # Quantized attack, original validated key-release duration.
+            raw_dur = max(0.02, float(n.end_sec - n.start_sec))
+            e = s + raw_dur
+        else:
+            e = _beat_to_seconds(float(n.end_beat), beat_times, tempo_bpm)
         if e <= s:
             continue
         target = lh if n.hand == "left" else rh
         target.notes.append(pretty_midi.Note(
             velocity=int(np_clip(n.velocity,1,127)),
-            pitch=int(n.midi_pitch), start=s, end=e,
+            pitch=int(n.midi_pitch), start=max(0.0, s), end=max(s + 0.015, e),
         ))
 
     if engraving_plan:
         for ped in engraving_plan.pedals:
-            s, e = ped.start_beat*spb, ped.end_beat*spb
-            # CC64 is sustain pedal. Duplicate to both staves/tracks so players
-            # that solo either track still hear the intended pedal gesture.
+            s = _beat_to_seconds(float(ped.start_beat), beat_times, tempo_bpm)
+            e = _beat_to_seconds(float(ped.end_beat), beat_times, tempo_bpm)
             for inst in (rh, lh):
-                inst.control_changes.append(pretty_midi.ControlChange(64, 127, max(0.0, s)))
-                inst.control_changes.append(pretty_midi.ControlChange(64, 0, max(s + 0.02, e)))
+                inst.control_changes.append(
+                    pretty_midi.ControlChange(64, 127, max(0.0, s))
+                )
+                inst.control_changes.append(
+                    pretty_midi.ControlChange(64, 0, max(s + 0.02, e))
+                )
 
     pm.instruments.extend([rh, lh])
     output_path.parent.mkdir(parents=True, exist_ok=True)

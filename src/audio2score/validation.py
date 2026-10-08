@@ -492,7 +492,7 @@ def _find_missing_candidates(
                 continue
             if post[idx] < -42.0 or gain[idx] < 5.0:
                 continue
-            if any(abs(n.start_sec - t) <= 0.090 and abs(n.midi_pitch - pitch) == 0 for n in notes):
+            if any(abs(n.start_sec - t) <= 0.115 and abs(n.midi_pitch - pitch) == 0 for n in notes):
                 continue
 
             ev = _pitch_evidence(pitch_db, frame_times, onset_times, pitch, float(t))
@@ -586,13 +586,35 @@ def _recover_repeated_attacks(
             e = _pitch_evidence(
                 pitch_db, frame_times, onset_times, n.midi_pitch, float(t)
             )
+
+            # v0.8 adds a target-specific spectral-flux veto. A broadband chord
+            # attack can make a sustained pitch look louder even when that key
+            # was not struck again. True re-attacks should produce a measurable
+            # positive flux in the target pitch itself, not merely a global
+            # onset elsewhere in the spectrum.
+            idx = n.midi_pitch - PIANO_MIN
+            f = int(np.searchsorted(frame_times, float(t)))
+            f = int(np.clip(f, 3, pitch_db.shape[1] - 4))
+            post_all = np.max(pitch_db[:, f:f + 3], axis=1)
+            pre_all = np.mean(pitch_db[:, f - 3:f], axis=1)
+            flux = np.maximum(0.0, post_all - pre_all)
+            target_flux = float(flux[idx]) if 0 <= idx < flux.size else 0.0
+            flux_rank = int(1 + np.sum(flux > target_flux))
+            flux_ratio = float(target_flux / (float(np.sum(flux)) + 1e-9))
+
+            sustain_only = (
+                (target_flux < 2.6 and flux_rank > 48)
+                or (target_flux < 4.2 and flux_rank > 60 and flux_ratio < 0.0035)
+            )
+
             # Reattack evidence is attack-centric, not sustain-centric.
             min_gain = 4.0 if n.midi_pitch <= 55 else 4.5
             min_peak = -40.0 if n.midi_pitch <= 55 else -38.0
             min_margin = -5.0 if n.midi_pitch <= 55 else -3.0
             min_support = 0.42 if n.midi_pitch <= 55 else 0.55
             if (
-                e["onset_support"] >= 0.90
+                not sustain_only
+                and e["onset_support"] >= 0.90
                 and e["gain_db"] >= min_gain
                 and e["peak_db"] >= min_peak
                 and e["pitch_margin_db"] >= min_margin
@@ -934,9 +956,9 @@ def write_validation_artifacts(result: ValidationResult, output_dir: str | Path,
     def ms(v):
         return "n/a" if v is None else f"{v:.1f} ms"
     html = f"""<!doctype html><html><head><meta charset='utf-8'>
-<title>Audio2Score v0.7 validation</title>
+<title>Audio2Score v0.8 validation</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:920px;margin:40px auto;padding:0 18px}}table{{border-collapse:collapse}}td,th{{padding:7px 12px;border-bottom:1px solid #ddd;text-align:left}}</style></head>
-<body><h1>Audio2Score v0.7 validation</h1><table>
+<body><h1>Audio2Score v0.8 validation</h1><table>
 <tr><th>Metric</th><th>Value</th></tr>
 <tr><td>Raw notes</td><td>{summary.raw_notes}</td></tr>
 <tr><td>Validated notes</td><td>{summary.retained_notes}</td></tr>

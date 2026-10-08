@@ -1,8 +1,8 @@
-# Audio2Score v0.7
+# Audio2Score v0.8
 
-Audio2Score converts recorded music into editable MIDI and MusicXML. v0.7 changes the solo-piano pipeline so a transcription model's MIDI is treated as a **hypothesis about the performance**, not as finished notation.
+Audio2Score converts recorded music into editable MIDI and MusicXML. v0.8 changes the solo-piano pipeline so a transcription model's MIDI is treated as a **hypothesis about the performance**, not as finished notation.
 
-The primary v0.7 flow is:
+The primary v0.8 flow is:
 
 ```text
 original audio
@@ -55,7 +55,7 @@ The setup script applies Audio2Score's compatibility patch to the published Tran
 audio2score "D:\Music\song.flac" --piano --piano-backend transkun
 ```
 
-The default v0.7 settings are:
+The default v0.8 settings are:
 
 ```text
 validation: balanced
@@ -104,7 +104,7 @@ audio2score "song.flac" --piano --no-validation
 
 ## Adaptive vs fixed score quantization
 
-v0.7 no longer snaps the *performance* MIDI to a sixteenth-note grid. Quantization happens only for notation.
+v0.8 no longer snaps the *performance* MIDI to a sixteenth-note grid. Quantization happens only for notation.
 
 ```powershell
 audio2score "song.flac" --piano --quantizer adaptive
@@ -118,11 +118,11 @@ For regression comparison with older versions:
 audio2score "song.flac" --piano --quantizer fixed --grid 4
 ```
 
-v0.7's MusicXML exporter currently emits binary note values; explicit triplet/tuplet engraving remains a future exporter feature.
+v0.8's MusicXML exporter currently emits binary note values; explicit triplet/tuplet engraving remains a future exporter feature.
 
 ## Compare any MIDI against its source audio
 
-v0.7 installs a second command:
+v0.8 installs a second command:
 
 ```powershell
 audio2score-compare "song.flac" "transcription.mid" -o comparison
@@ -153,11 +153,11 @@ audio2score "song.flac" `
   --piano-midi-input "candidate.mid"
 ```
 
-Audio2Score will treat `candidate.mid` as the raw hypothesis, validate it against the FLAC, and continue through the normal v0.7 arranging/engraving pipeline.
+Audio2Score will treat `candidate.mid` as the raw hypothesis, validate it against the FLAC, and continue through the normal v0.8 arranging/engraving pipeline.
 
 ## Cached rerendering
 
-The v0.7 analysis JSON stores three separate symbolic layers:
+The v0.8 analysis JSON stores three separate symbolic layers:
 
 - `raw_notes`
 - `validated_notes` (unquantized)
@@ -176,7 +176,7 @@ This allows quantization, arranging, and engraving changes without rerunning the
 
 ## What validation means
 
-Audio validation is not a ground-truth oracle. Acoustic piano creates difficult ambiguity through sustain pedal, coupled strings, octave reinforcement, room resonance, and harmonic partials. v0.7 therefore records note-level evidence instead of pretending every decision is certain.
+Audio validation is not a ground-truth oracle. Acoustic piano creates difficult ambiguity through sustain pedal, coupled strings, octave reinforcement, room resonance, and harmonic partials. v0.8 therefore records note-level evidence instead of pretending every decision is certain.
 
 Each raw note can carry:
 
@@ -199,12 +199,12 @@ python -m pip install -e ".[dev]"
 pytest -q
 ```
 
-v0.7 ships with regression tests for transcription compatibility, arrangements, MusicXML/MIDI export, validation, adaptive quantization, enharmonic spelling, and unquantized performance MIDI.
+v0.8 ships with regression tests for transcription compatibility, arrangements, MusicXML/MIDI export, validation, adaptive quantization, enharmonic spelling, and unquantized performance MIDI.
 
 
-## v0.7 accuracy changes
+## v0.8 accuracy changes
 
-v0.7 focuses on the three failure modes observed in the conservative Faded
+v0.8 focuses on the three failure modes observed in the conservative Faded
 benchmark:
 
 * repeated-key attacks hidden inside long pedal-held notes,
@@ -222,3 +222,36 @@ For the most conservative correction behavior:
 ```powershell
 audio2score "song.flac" --piano --piano-backend transkun --validation-strength conservative
 ```
+
+
+## v0.8 fidelity changes
+
+v0.8 is focused on the remaining accuracy issues observed in the v0.8 Faded
+benchmark:
+
+* left-hand chord voicing errors,
+* false same-key re-attacks during pedal sustain,
+* score-MIDI timing drift / local tempo mismatch,
+* residual playback hesitation.
+
+Key changes:
+
+1. **Performance-timed score MIDI.** Quantized beat positions are mapped back
+   through the locally varying source beat map instead of one average tempo.
+   The faithful MIDI also retains validated key-release durations where possible.
+2. **Note-driven harmony refinement.** After validation, bar harmony is inferred
+   again from the actual piano-note hypotheses, heavily weighting the left hand.
+3. **Chord-level LH cleanup.** Dense left-hand attacks are evaluated as a group.
+   Only strongly supported, harmony-consistent repairs/removals are allowed.
+4. **Sustain-safe repeat recovery.** Same-key re-attacks now require target-pitch
+   spectral flux so an unrelated chord onset is less likely to retrigger a
+   sustained note.
+5. **Conservative validation is the default** for piano transcription.
+
+Recommended command:
+
+```powershell
+audio2score "song.flac" --piano --piano-backend transkun
+```
+
+`--validation-strength balanced` remains available when desired.

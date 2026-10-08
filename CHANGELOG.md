@@ -1,3 +1,14 @@
+# Audio2Score v0.8.0
+
+- Added performance-timed score MIDI using the source's locally varying beat map.
+- Faithful MIDI preserves validated source key-release durations where possible.
+- Added note-driven bar harmony refinement weighted toward the left hand.
+- Added conservative chord-level left-hand cleanup and pitch repair.
+- Added a target-pitch spectral-flux veto to reduce false repeats during sustain.
+- Changed the default piano validation profile to conservative.
+- Retains v0.7 repeated-note recovery, variable beat tracking, FLAC validation,
+  Transkun compatibility patches, and raw/validated/score artifact separation.
+
 # Audio2Score v0.7.0
 
 - Replaced the metronomic v0.6 beat grid with a locally varying performance beat map.

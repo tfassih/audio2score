@@ -18,6 +18,7 @@ from .quantize import (
 from .arrange import build_arrangements
 from .engraving import build_engraving_plan, plan_for_variant
 from .validation import validate_piano_transcription, write_validation_artifacts
+from .accuracy import refine_harmony_from_piano_notes, repair_left_hand_chords
 from .export import (
     write_musicxml, write_midi, write_piano_musicxml, write_piano_midi,
     write_performance_midi, export_pdf_with_musescore,
@@ -25,7 +26,7 @@ from .export import (
 from .music import chord_name, pc_name, key_fifths
 
 log = logging.getLogger(__name__)
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 
 def _export_piano_variant(
@@ -41,6 +42,7 @@ def _export_piano_variant(
     composer: str,
     make_pdf: bool,
     engraving_plan=None,
+    beat_times: list[float] | None = None,
 ) -> dict:
     stem = f"{base}.piano-{variant}"
     xml = output_dir / f"{stem}.musicxml"
@@ -54,7 +56,12 @@ def _export_piano_variant(
         composer=composer,
         engraving_plan=engraving_plan,
     )
-    write_piano_midi(midi, notes, tempo_bpm, engraving_plan=engraving_plan)
+    write_piano_midi(
+        midi, notes, tempo_bpm,
+        engraving_plan=engraving_plan,
+        beat_times=beat_times,
+        preserve_source_durations=(variant == "faithful"),
+    )
     result = {"musicxml": str(xml), "midi": str(midi)}
     if make_pdf:
         try:
@@ -111,7 +118,7 @@ def rerender_from_analysis(
     quantizer: str = "adaptive",
     grid: int = 4,
 ) -> dict:
-    """Rebuild v0.7 score outputs from a prior analysis without retranscribing.
+    """Rebuild v0.8 score outputs from a prior analysis without retranscribing.
 
     v0.6 prefers cached *validated unquantized* notes, then quantizes only for
     notation. Older caches fall back to quantized/faithful notes.
@@ -179,6 +186,7 @@ def rerender_from_analysis(
             output_dir, base, name, variant_notes, chords, key,
             tempo_bpm, meter, title, composer, make_pdf,
             engraving_plan=plan_for_variant(engraving_plan, variant_notes, meter),
+            beat_times=beat_times,
         )
     if "faithful" in outputs:
         outputs["musicxml"] = outputs["faithful"]["musicxml"]
@@ -340,6 +348,7 @@ def transcribe_song(
 
         raw_notes = assign_piano_hands(raw_notes)
 
+        lh_chord_repairs: list[dict] = []
         if validation:
             validation_result = validate_piano_transcription(
                 full_y, sr, raw_notes, rhythm.beat_times,
@@ -349,7 +358,6 @@ def transcribe_song(
                 substitute_pitches=substitute_pitches,
             )
             validated_notes = assign_piano_hands(validation_result.notes)
-            validation_outputs = write_validation_artifacts(validation_result, output_dir, base)
             log.info(
                 "Audio validation: %d raw -> %d validated (%d rejected, %d corrected, %d added)",
                 len(raw_notes), len(validated_notes),
@@ -359,6 +367,39 @@ def transcribe_song(
             )
         else:
             validated_notes = assign_piano_hands(raw_notes)
+
+        # v0.8 re-estimates harmony from the validated piano notes themselves.
+        # This is substantially more reliable for solo-piano bass/chord cleanup
+        # than chroma alone, especially when two adjacent measures were merged.
+        refined = refine_harmony_from_piano_notes(
+            validated_notes, rhythm.beat_times, key, fallback=chords
+        )
+        if refined:
+            chords = refined
+
+        if validation:
+            validated_notes, lh_chord_repairs = repair_left_hand_chords(
+                full_y, sr, validated_notes, rhythm.beat_times, key, chords
+            )
+            validated_notes = assign_piano_hands(validated_notes)
+            # One more harmony pass after the conservative LH repairs.
+            refined2 = refine_harmony_from_piano_notes(
+                validated_notes, rhythm.beat_times, key, fallback=chords
+            )
+            if refined2:
+                chords = refined2
+            validation_result.notes = validated_notes
+            validation_result.summary.retained_notes = len(validated_notes)
+            validation_outputs = write_validation_artifacts(
+                validation_result, output_dir, base
+            )
+            if lh_chord_repairs:
+                repairs_path = output_dir / f"{base}.lh-chord-repairs.json"
+                repairs_path.write_text(
+                    json.dumps(lh_chord_repairs, indent=2),
+                    encoding="utf-8",
+                )
+                validation_outputs["lh_chord_repairs"] = str(repairs_path)
 
         validated_midi_path = output_dir / f"{base}.02-validated-performance.mid"
         write_performance_midi(
@@ -422,6 +463,7 @@ def transcribe_song(
                 output_dir, base, name, variant_notes, chords, key,
                 rhythm.tempo_bpm, meter, title, composer, make_pdf,
                 engraving_plan=plan_for_variant(engraving_plan, variant_notes, meter),
+                beat_times=rhythm.beat_times,
             )
         if "faithful" in outputs:
             outputs["musicxml"] = outputs["faithful"]["musicxml"]
@@ -459,6 +501,7 @@ def transcribe_song(
             "pitch_substitutions": validation_result.pitch_substitutions,
             "rejected_notes": [n.to_dict() for n in validation_result.rejected],
             "added_notes": [n.to_dict() for n in validation_result.added],
+            "lh_chord_repairs": lh_chord_repairs if piano else [],
         }
 
     data = {
