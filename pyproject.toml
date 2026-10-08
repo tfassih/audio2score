@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audio2score"
+version = "0.5.0"
+description = "Turn audio into editable sheet music; v0.5 adds engraving, phrasing, dynamics, pedal, section detection, and cached rerendering."
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+license = {text = "MIT"}
+authors = [{name = "Thomas Fassih"}]
+dependencies = [
+  "numpy>=1.24,<3",
+  "scipy>=1.10,<2",
+  "librosa>=0.10.2,<0.12",
+  "soundfile>=0.12,<1",
+  "pretty_midi>=0.2.10,<1",
+]
+
+[project.optional-dependencies]
+ml = ["basic-pitch>=0.4.0"]
+separation = ["audio-separator[cpu]>=0.44.0"]
+piano-neural = ["transkun"]
+full = ["basic-pitch>=0.4.0", "audio-separator[cpu]>=0.44.0"]
+dev = ["pytest>=8,<9"]
+
+[project.scripts]
+audio2score = "audio2score.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
