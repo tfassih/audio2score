@@ -44,6 +44,7 @@ class ValidationSummary:
     p90_onset_error_ms: float | None
     right_weak_rate: float | None
     left_weak_rate: float | None
+    recovered_repeated_notes: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -228,10 +229,12 @@ def _pitch_evidence(
 ) -> dict:
     if midi_pitch < PIANO_MIN or midi_pitch > PIANO_MAX:
         return {
-            "support": 0.0, "peak_db": -80.0, "gain_db": 0.0,
+            "support": 0.0, "fundamental_support": 0.0,
+            "harmonic_support": 0.0, "peak_db": -80.0, "gain_db": 0.0,
             "pitch_margin_db": -20.0, "onset_error_sec": 9.0,
             "onset_support": 0.0,
         }
+
     idx = midi_pitch - PIANO_MIN
     f = int(np.searchsorted(frame_times, time_sec))
     f = int(np.clip(f, 0, pitch_db.shape[1] - 1))
@@ -239,25 +242,33 @@ def _pitch_evidence(
     post_hi = min(pitch_db.shape[1], f + 4)
     pre_lo = max(0, f - 8)
     pre_hi = max(pre_lo + 1, f - 2)
-    peak = float(np.max(pitch_db[idx, post_lo:post_hi]))
-    pre = float(np.median(pitch_db[idx, pre_lo:pre_hi])) if f > 2 else -80.0
-    gain = peak - pre
 
-    neighbor_idx = [j for j in (idx - 2, idx - 1, idx + 1, idx + 2) if 0 <= j < pitch_db.shape[0]]
+    def band_stats(pitch: int) -> tuple[float, float]:
+        j = pitch - PIANO_MIN
+        if j < 0 or j >= pitch_db.shape[0]:
+            return -80.0, 0.0
+        peak_ = float(np.max(pitch_db[j, post_lo:post_hi]))
+        pre_ = float(np.median(pitch_db[j, pre_lo:pre_hi])) if f > 2 else -80.0
+        return peak_, peak_ - pre_
+
+    peak, gain = band_stats(midi_pitch)
+
+    neighbor_idx = [
+        j for j in (idx - 2, idx - 1, idx + 1, idx + 2)
+        if 0 <= j < pitch_db.shape[0]
+    ]
     if neighbor_idx:
-        neighbor_peak = max(float(np.max(pitch_db[j, post_lo:post_hi])) for j in neighbor_idx)
+        neighbor_peak = max(
+            float(np.max(pitch_db[j, post_lo:post_hi])) for j in neighbor_idx
+        )
         margin = peak - neighbor_peak
     else:
         margin = 0.0
 
     onset_error = _nearest_onset_error(time_sec, onset_times)
-    onset_support = float(math.exp(-0.5 * (onset_error / 0.085) ** 2))
+    onset_support = float(math.exp(-0.5 * (onset_error / 0.075) ** 2))
 
-    # Calibrated against the v0.5 Faded diagnostic set.  A logistic score is
-    # substantially more discriminative than a weighted average because weak
-    # fundamentals should remain weak even when one other feature is strong.
-    # Coefficients use dB-domain peak, attack gain, neighboring-semitone margin
-    # and local attack proximity.
+    # Original v0.6 fundamental-only logistic score.
     z = (
         4.837
         + 0.2274581 * peak
@@ -265,16 +276,51 @@ def _pitch_evidence(
         + 0.12378257 * margin
         + 0.10070897 * (onset_error * 10.0)
     )
-    support = float(1.0 / (1.0 + math.exp(-float(np.clip(z, -30.0, 30.0)))))
+    fundamental_support = float(
+        1.0 / (1.0 + math.exp(-float(np.clip(z, -30.0, 30.0))))
+    )
+
+    # Low piano fundamentals can be quieter than their 2nd/3rd/4th partials.
+    # v0.7 therefore scores a *harmonic family* for the left hand instead of
+    # treating a weak fundamental as proof that no key was struck.
+    partials = []
+    for semis, weight in ((12, 0.42), (19, 0.28), (24, 0.20), (28, 0.10)):
+        hp = midi_pitch + semis
+        if hp > PIANO_MAX:
+            continue
+        p_peak, p_gain = band_stats(hp)
+        amp = float(np.clip((p_peak + 48.0) / 22.0, 0.0, 1.0))
+        atk = float(np.clip((p_gain + 1.0) / 10.0, 0.0, 1.0))
+        partials.append((weight, 0.72 * amp + 0.28 * atk))
+    harmonic_support = (
+        sum(w * s for w, s in partials) / max(1e-9, sum(w for w, _ in partials))
+        if partials else 0.0
+    )
+
+    support = fundamental_support
+    if midi_pitch <= 55:
+        # Preserve the fundamental as the dominant term, but let a coherent
+        # harmonic family rescue genuine bass notes.
+        support = max(
+            fundamental_support,
+            0.62 * fundamental_support + 0.38 * harmonic_support,
+        )
+        # Very-low octave ghosts remain suspect when the nominal fundamental
+        # is effectively absent. This prevents an actual D#2 from making D#1
+        # look valid solely through its octave energy.
+        if midi_pitch < 33 and peak < -46.0:
+            support *= 0.52
+
     return {
-        "support": support,
+        "support": float(np.clip(support, 0.0, 1.0)),
+        "fundamental_support": fundamental_support,
+        "harmonic_support": float(harmonic_support),
         "peak_db": peak,
         "gain_db": gain,
         "pitch_margin_db": margin,
         "onset_error_sec": onset_error,
         "onset_support": onset_support,
     }
-
 
 def _active_lower_notes(notes: list[NoteEvent], target: NoteEvent) -> list[NoteEvent]:
     out = []
@@ -330,25 +376,86 @@ def _candidate_neighbor_pitch(
     onset_times: np.ndarray,
     existing: list[NoteEvent],
     cfg: ValidationConfig,
+    beat_times: list[float] | None = None,
+    chords: list[ChordEvent] | None = None,
+    key: KeyEstimate | None = None,
 ) -> tuple[int | None, dict | None]:
-    cur = _pitch_evidence(pitch_db, frame_times, onset_times, note.midi_pitch, note.start_sec)
+    cur = _pitch_evidence(
+        pitch_db, frame_times, onset_times, note.midi_pitch, note.start_sec
+    )
+
+    # Upper voices are usually semitone mistakes. Low-register piano errors are
+    # frequently octave/fifth confusions, so search a wider but still bounded
+    # neighborhood and let harmonic-family evidence + harmony decide.
+    if note.hand == "left" or note.midi_pitch <= 57:
+        # Conservative low-register repair searches nearby chord/fifth errors,
+        # but does not "correct" an ordinary D#2/C#2 up an octave simply
+        # because the first harmonic is stronger than the fundamental.
+        deltas = [-7, -5, -2, -1, 1, 2, 5, 7]
+        if note.midi_pitch < 33:
+            deltas.append(12)
+        elif note.midi_pitch > 52:
+            deltas.append(-12)
+        deltas = tuple(deltas)
+    else:
+        deltas = (-2, -1, 1, 2)
+
+    beat = (
+        time_to_beat(note.start_sec, beat_times)
+        if beat_times and len(beat_times) >= 2 else 0.0
+    )
+    chord_pcs = _chord_tones_at(chords or [], beat)
+    scale_pcs = _scale_pitch_classes(key)
+
+    # Left-hand continuity prior: compare to nearby already-detected bass notes.
+    nearby_lh = [
+        x.midi_pitch for x in existing
+        if x is not note and (x.hand == "left" or x.midi_pitch <= 57)
+        and abs(x.start_sec - note.start_sec) <= 2.5
+        and x.midi_pitch <= 62
+    ]
+    continuity_center = float(np.median(nearby_lh)) if nearby_lh else float(note.midi_pitch)
+
     best_pitch = None
     best_e = None
-    for delta in (-2, -1, 1, 2):
+    best_score = cur["support"]
+    for delta in deltas:
         p = note.midi_pitch + delta
         if p < PIANO_MIN or p > PIANO_MAX:
             continue
-        if any(abs(x.start_sec - note.start_sec) < 0.07 and x.midi_pitch == p for x in existing):
+        if any(
+            abs(x.start_sec - note.start_sec) < 0.07 and x.midi_pitch == p
+            for x in existing
+        ):
             continue
-        e = _pitch_evidence(pitch_db, frame_times, onset_times, p, note.start_sec)
-        if e["support"] < cfg.substitute_floor:
-            continue
-        if e["support"] < cur["support"] + cfg.substitute_margin:
-            continue
-        if best_e is None or e["support"] > best_e["support"]:
-            best_pitch, best_e = p, e
-    return best_pitch, best_e
 
+        e = _pitch_evidence(pitch_db, frame_times, onset_times, p, note.start_sec)
+        score = float(e["support"])
+        if chord_pcs:
+            score += 0.11 if p % 12 in chord_pcs else -0.035
+        if p % 12 in scale_pcs:
+            score += 0.025
+        if note.hand == "left" or note.midi_pitch <= 57:
+            score -= 0.012 * min(12.0, abs(p - continuity_center))
+            if p < 33:
+                score -= 0.10
+
+        # Conservative mode still needs decisive evidence to change pitch.
+        threshold = cfg.substitute_floor
+        margin_needed = cfg.substitute_margin
+        if abs(delta) >= 5:
+            threshold = max(threshold, 0.88)
+            margin_needed = max(margin_needed, 0.28)
+
+        if e["support"] < threshold:
+            continue
+        if score < cur["support"] + margin_needed:
+            continue
+        if score > best_score:
+            best_score = score
+            best_pitch, best_e = p, e
+
+    return best_pitch, best_e
 
 def _find_missing_candidates(
     pitch_db: np.ndarray,
@@ -439,6 +546,129 @@ def _find_missing_candidates(
     return candidates
 
 
+def _recover_repeated_attacks(
+    notes: list[NoteEvent],
+    pitch_db: np.ndarray,
+    frame_times: np.ndarray,
+    onset_times: np.ndarray,
+) -> tuple[list[NoteEvent], list[dict]]:
+    """Split long note hypotheses when the same key is audibly re-attacked.
+
+    Transcription models often represent pedal-held repeated piano notes as one
+    long note. We look for a new broadband onset *inside* a long note and then
+    require a simultaneous rise in that pitch's CQT band. This happens before
+    score quantization so repeated notes cannot be lost downstream.
+    """
+    work = _copy_notes(notes)
+    recovered: list[dict] = []
+    original_same_pitch = {}
+    for n in work:
+        original_same_pitch.setdefault(n.midi_pitch, []).append(n)
+
+    out: list[NoteEvent] = []
+    for n in work:
+        dur = n.end_sec - n.start_sec
+        if dur < 0.48:
+            out.append(n)
+            continue
+
+        candidates = onset_times[
+            (onset_times >= n.start_sec + 0.16)
+            & (onset_times <= n.end_sec - 0.09)
+        ]
+        valid = []
+        for t in candidates:
+            if any(
+                x is not n and abs(x.start_sec - float(t)) <= 0.11
+                for x in original_same_pitch.get(n.midi_pitch, [])
+            ):
+                continue
+            e = _pitch_evidence(
+                pitch_db, frame_times, onset_times, n.midi_pitch, float(t)
+            )
+            # Reattack evidence is attack-centric, not sustain-centric.
+            min_gain = 4.0 if n.midi_pitch <= 55 else 4.5
+            min_peak = -40.0 if n.midi_pitch <= 55 else -38.0
+            min_margin = -5.0 if n.midi_pitch <= 55 else -3.0
+            min_support = 0.42 if n.midi_pitch <= 55 else 0.55
+            if (
+                e["onset_support"] >= 0.90
+                and e["gain_db"] >= min_gain
+                and e["peak_db"] >= min_peak
+                and e["pitch_margin_db"] >= min_margin
+                and e["support"] >= min_support
+            ):
+                if not valid or float(t) - valid[-1] >= 0.18:
+                    valid.append(float(t))
+
+        if not valid:
+            out.append(n)
+            continue
+
+        starts = [n.start_sec] + valid
+        ends = [max(n.start_sec + 0.04, t - 0.008) for t in valid] + [n.end_sec]
+        for idx, (s, eend) in enumerate(zip(starts, ends)):
+            nn = deepcopy(n)
+            nn.start_sec = float(s)
+            nn.end_sec = max(float(s) + 0.045, float(eend))
+            if idx > 0:
+                nn.source = f"{n.source}+reattack"
+                nn.validation_status = "recovered-repeat"
+                nn.validation_reason = "audio_same_key_reattack"
+                recovered.append({
+                    "time_sec": float(s),
+                    "midi_pitch": int(n.midi_pitch),
+                    "hand": n.hand,
+                    "source_note_start": float(n.start_sec),
+                })
+            out.append(nn)
+
+    out.sort(key=lambda x: (x.start_sec, x.midi_pitch))
+    return out, recovered
+
+
+def _repair_performance_gaps(
+    notes: list[NoteEvent],
+    onset_times: np.ndarray,
+    max_gap_sec: float = 0.115,
+) -> list[NoteEvent]:
+    """Remove tiny artificial key-release gaps that sound like hesitation.
+
+    This does not create new attacks. It only extends a note to the next
+    same-hand attack when the model released it a few tens of milliseconds
+    early and no clear acoustic onset marks a deliberate rest.
+    """
+    out = _copy_notes(notes)
+    by_hand: dict[str, list[NoteEvent]] = {"left": [], "right": []}
+    for n in out:
+        by_hand["left" if n.hand == "left" else "right"].append(n)
+
+    for seq in by_hand.values():
+        seq.sort(key=lambda n: (n.start_sec, n.midi_pitch))
+        attack_times = sorted({round(n.start_sec, 6) for n in seq})
+        for a_t, b_t in zip(attack_times, attack_times[1:]):
+            gap = b_t - a_t
+            if gap <= 0:
+                continue
+            active = [n for n in seq if abs(n.start_sec - a_t) < 0.002]
+            if not active:
+                continue
+            max_end = max(n.end_sec for n in active)
+            silence = b_t - max_end
+            if 0.015 < silence <= max_gap_sec:
+                # If there is no independent attack inside the gap, this is
+                # almost certainly an early release artifact rather than a rest.
+                middle = onset_times[
+                    (onset_times > max_end + 0.015) & (onset_times < b_t - 0.015)
+                ]
+                if middle.size == 0:
+                    target_end = max_end + 0.72 * silence
+                    for n in active:
+                        if n.end_sec >= max_end - 0.010:
+                            n.end_sec = max(n.end_sec, target_end)
+    return sorted(out, key=lambda n: (n.start_sec, n.midi_pitch))
+
+
 def validate_piano_transcription(
     y: np.ndarray,
     sr: int,
@@ -475,6 +705,11 @@ def validate_piano_transcription(
 
     pitch_db, frame_times = _pitch_matrix(y, sr, hop_length=hop_length)
 
+    # Recover same-key re-attacks before evaluating note correctness.
+    notes, recovered_repeats = _recover_repeated_attacks(
+        notes, pitch_db, frame_times, onset_times
+    )
+
     evidence_by_id: dict[int, dict] = {}
     for n in notes:
         evidence_by_id[id(n)] = _pitch_evidence(
@@ -502,7 +737,10 @@ def validate_piano_transcription(
 
         # Neighbor-pitch correction is intentionally conservative.
         if substitute_pitches and support < cfg.ambiguous_floor + 0.08:
-            new_pitch, new_e = _candidate_neighbor_pitch(n, pitch_db, frame_times, onset_times, notes, cfg)
+            new_pitch, new_e = _candidate_neighbor_pitch(
+                n, pitch_db, frame_times, onset_times, notes, cfg,
+                beat_times=beat_times, chords=chords, key=key,
+            )
             if new_pitch is not None and new_e is not None:
                 old_pitch = n.midi_pitch
                 n.original_pitch = old_pitch
@@ -524,15 +762,28 @@ def validate_piano_transcription(
 
         reject = False
         if status != "corrected":
-            if support < cfg.reject_floor:
-                reject = True
-                reason = "very_low_audio_support"
-            elif support < cfg.ambiguous_floor and harmonic >= cfg.harmonic_reject_floor:
-                reject = True
-                reason = "likely_harmonic_artifact"
-            elif n.midi_pitch < 48 and support < cfg.ambiguous_floor - 0.06 and n.onset_support < 0.20:
-                reject = True
-                reason = "weak_low_register_hypothesis"
+            # Low-register piano attacks deserve more benefit of the doubt:
+            # fundamentals can be weak while upper partials and onset evidence
+            # are strong. Conservative mode therefore rejects them only when
+            # *both* the pitch family and onset evidence are unconvincing.
+            if n.midi_pitch <= 55 and n.onset_support >= 0.72:
+                low_floor = cfg.reject_floor * 0.35
+                if support < low_floor and e.get("harmonic_support", 0.0) < 0.24:
+                    reject = True
+                    reason = "unsupported_low_register_attack"
+                elif support < cfg.ambiguous_floor and harmonic >= min(0.98, cfg.harmonic_reject_floor + 0.08):
+                    reject = True
+                    reason = "likely_low_register_harmonic_artifact"
+            else:
+                if support < cfg.reject_floor:
+                    reject = True
+                    reason = "very_low_audio_support"
+                elif support < cfg.ambiguous_floor and harmonic >= cfg.harmonic_reject_floor:
+                    reject = True
+                    reason = "likely_harmonic_artifact"
+                elif n.midi_pitch < 48 and support < cfg.ambiguous_floor - 0.06 and n.onset_support < 0.20:
+                    reject = True
+                    reason = "weak_low_register_hypothesis"
 
         n.validation_status = "rejected" if reject else status
         n.validation_reason = reason
@@ -544,6 +795,8 @@ def validate_piano_transcription(
             "hand": n.hand,
             "source": n.source,
             "audio_support": n.audio_support,
+            "fundamental_support": e.get("fundamental_support"),
+            "harmonic_family_support": e.get("harmonic_support"),
             "peak_db": e["peak_db"],
             "gain_db": e["gain_db"],
             "onset_support": n.onset_support,
@@ -589,6 +842,9 @@ def validate_piano_transcription(
             retained.append(new)
             added.append(new)
 
+    # Smooth tiny release gaps which otherwise create audible hesitation.
+    retained = _repair_performance_gaps(retained, onset_times)
+
     # Retriggers end the previous key event, but acoustic ringing/pedal does not
     # extend the symbolic keypress. Preserve raw model release times otherwise.
     retained.sort(key=lambda n: (n.midi_pitch, n.start_sec))
@@ -625,6 +881,7 @@ def validate_piano_transcription(
         p90_onset_error_ms=float(np.percentile(onset_errors, 90)) if onset_errors else None,
         right_weak_rate=weak_rate("right"),
         left_weak_rate=weak_rate("left"),
+        recovered_repeated_notes=len(recovered_repeats),
     )
     return ValidationResult(
         notes=retained,
@@ -653,6 +910,7 @@ def write_validation_artifacts(result: ValidationResult, output_dir: str | Path,
         "rejected_notes": [n.to_dict() for n in result.rejected],
         "added_notes": [n.to_dict() for n in result.added],
         "pitch_substitutions": result.pitch_substitutions,
+        "recovered_repeated_notes": result.summary.recovered_repeated_notes,
     }
     report_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
@@ -676,15 +934,16 @@ def write_validation_artifacts(result: ValidationResult, output_dir: str | Path,
     def ms(v):
         return "n/a" if v is None else f"{v:.1f} ms"
     html = f"""<!doctype html><html><head><meta charset='utf-8'>
-<title>Audio2Score v0.6 validation</title>
+<title>Audio2Score v0.7 validation</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:920px;margin:40px auto;padding:0 18px}}table{{border-collapse:collapse}}td,th{{padding:7px 12px;border-bottom:1px solid #ddd;text-align:left}}</style></head>
-<body><h1>Audio2Score v0.6 validation</h1><table>
+<body><h1>Audio2Score v0.7 validation</h1><table>
 <tr><th>Metric</th><th>Value</th></tr>
 <tr><td>Raw notes</td><td>{summary.raw_notes}</td></tr>
 <tr><td>Validated notes</td><td>{summary.retained_notes}</td></tr>
 <tr><td>Rejected</td><td>{summary.rejected_notes}</td></tr>
 <tr><td>Pitch corrections</td><td>{summary.corrected_pitches}</td></tr>
 <tr><td>Added missing-note hypotheses</td><td>{summary.added_missing_notes}</td></tr>
+<tr><td>Recovered repeated-note attacks</td><td>{summary.recovered_repeated_notes}</td></tr>
 <tr><td>Strong / ambiguous / weak</td><td>{summary.strong_support} / {summary.ambiguous_support} / {summary.weak_support}</td></tr>
 <tr><td>Median onset error</td><td>{ms(summary.median_onset_error_ms)}</td></tr>
 <tr><td>90th-percentile onset error</td><td>{ms(summary.p90_onset_error_ms)}</td></tr>

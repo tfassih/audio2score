@@ -25,7 +25,7 @@ from .export import (
 from .music import chord_name, pc_name, key_fifths
 
 log = logging.getLogger(__name__)
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 
 def _export_piano_variant(
@@ -111,7 +111,7 @@ def rerender_from_analysis(
     quantizer: str = "adaptive",
     grid: int = 4,
 ) -> dict:
-    """Rebuild v0.6 score outputs from a prior analysis without retranscribing.
+    """Rebuild v0.7 score outputs from a prior analysis without retranscribing.
 
     v0.6 prefers cached *validated unquantized* notes, then quantizes only for
     notation. Older caches fall back to quantized/faithful notes.

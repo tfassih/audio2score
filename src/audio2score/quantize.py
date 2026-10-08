@@ -140,7 +140,7 @@ def _candidate_beats(raw: float, max_subdivisions: int) -> list[tuple[float, flo
     return sorted((q, p) for q, p in cands.items())
 
 
-def _attack_groups_seconds(notes: list[NoteEvent], tolerance_sec: float = 0.060) -> list[list[NoteEvent]]:
+def _attack_groups_seconds(notes: list[NoteEvent], tolerance_sec: float = 0.045) -> list[list[NoteEvent]]:
     seq = sorted(notes, key=lambda n: (n.start_sec, n.midi_pitch))
     groups: list[list[NoteEvent]] = []
     for n in seq:
@@ -200,10 +200,10 @@ def adaptive_quantize_polyphonic_notes(
                     continue
                 q_interval = q - pq
                 # Do not collapse clearly separate attacks onto one grid point.
-                if raw_interval > 0.11 and q_interval < 1e-7:
+                if raw_interval > 0.085 and q_interval < 1e-7:
                     transition = 1.2
                 else:
-                    transition = 0.42 * abs(q_interval - raw_interval)
+                    transition = 0.62 * abs(q_interval - raw_interval)
                 # Penalize implausibly tiny notated intervals unless the raw
                 # performance also contains a fast ornament/repetition.
                 if 0 < q_interval < 0.24 and raw_interval > 0.30:

@@ -1,3 +1,14 @@
+# Audio2Score v0.7.0
+
+- Replaced the metronomic v0.6 beat grid with a locally varying performance beat map.
+- Added same-key re-attack recovery for repeated piano notes merged under pedal.
+- Added harmonic-family pitch evidence for low-register piano notes.
+- Added wider, harmony-aware left-hand pitch repair (neighbor/fifth/octave hypotheses).
+- Made conservative validation less likely to delete a strong left-hand attack solely because its fundamental is weak.
+- Added micro-gap repair to reduce artificial hesitation in performance MIDI.
+- Tightened adaptive attack grouping so close repeated notes are less likely to collapse.
+- Retains all v0.6 raw/validated/score representation separation and diagnostics.
+
 # Changelog
 
 ## 0.6.0
