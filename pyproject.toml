@@ -9,7 +9,7 @@ description = "Audio-to-sheet-music pipeline with audio-validated piano transcri
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
-authors = [{name = "Audio2Score prototype"}]
+authors = [{name = "Thomas Fassih"}]
 dependencies = [
   "numpy>=2.0,<3",
   "scipy>=1.18,<2",

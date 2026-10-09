@@ -1,8 +1,8 @@
-# Audio2Score v0.10
+# Audio2Score v0.11
 
-Audio2Score converts recorded music into editable MIDI and MusicXML. v0.10 changes the solo-piano pipeline so a transcription model's MIDI is treated as a **hypothesis about the performance**, not as finished notation.
+Audio2Score converts recorded music into editable MIDI and MusicXML. v0.11 changes the solo-piano pipeline so a transcription model's MIDI is treated as a **hypothesis about the performance**, not as finished notation.
 
-The primary v0.10 flow is:
+The primary v0.11 flow is:
 
 ```text
 original audio
@@ -55,7 +55,7 @@ The setup script applies Audio2Score's compatibility patch to the published Tran
 audio2score "D:\Music\song.flac" --piano --piano-backend transkun
 ```
 
-The default v0.10 settings are:
+The default v0.11 settings are:
 
 ```text
 validation: balanced
@@ -104,7 +104,7 @@ audio2score "song.flac" --piano --no-validation
 
 ## Adaptive vs fixed score quantization
 
-v0.10 no longer snaps the *performance* MIDI to a sixteenth-note grid. Quantization happens only for notation.
+v0.11 no longer snaps the *performance* MIDI to a sixteenth-note grid. Quantization happens only for notation.
 
 ```powershell
 audio2score "song.flac" --piano --quantizer adaptive
@@ -118,11 +118,11 @@ For regression comparison with older versions:
 audio2score "song.flac" --piano --quantizer fixed --grid 4
 ```
 
-v0.10's MusicXML exporter currently emits binary note values; explicit triplet/tuplet engraving remains a future exporter feature.
+v0.11's MusicXML exporter currently emits binary note values; explicit triplet/tuplet engraving remains a future exporter feature.
 
 ## Compare any MIDI against its source audio
 
-v0.10 installs a second command:
+v0.11 installs a second command:
 
 ```powershell
 audio2score-compare "song.flac" "transcription.mid" -o comparison
@@ -153,11 +153,11 @@ audio2score "song.flac" `
   --piano-midi-input "candidate.mid"
 ```
 
-Audio2Score will treat `candidate.mid` as the raw hypothesis, validate it against the FLAC, and continue through the normal v0.10 arranging/engraving pipeline.
+Audio2Score will treat `candidate.mid` as the raw hypothesis, validate it against the FLAC, and continue through the normal v0.11 arranging/engraving pipeline.
 
 ## Cached rerendering
 
-The v0.10 analysis JSON stores three separate symbolic layers:
+The v0.11 analysis JSON stores three separate symbolic layers:
 
 - `raw_notes`
 - `validated_notes` (unquantized)
@@ -176,7 +176,7 @@ This allows quantization, arranging, and engraving changes without rerunning the
 
 ## What validation means
 
-Audio validation is not a ground-truth oracle. Acoustic piano creates difficult ambiguity through sustain pedal, coupled strings, octave reinforcement, room resonance, and harmonic partials. v0.10 therefore records note-level evidence instead of pretending every decision is certain.
+Audio validation is not a ground-truth oracle. Acoustic piano creates difficult ambiguity through sustain pedal, coupled strings, octave reinforcement, room resonance, and harmonic partials. v0.11 therefore records note-level evidence instead of pretending every decision is certain.
 
 Each raw note can carry:
 
@@ -199,12 +199,12 @@ python -m pip install -e ".[dev]"
 pytest -q
 ```
 
-v0.10 ships with regression tests for transcription compatibility, arrangements, MusicXML/MIDI export, validation, adaptive quantization, enharmonic spelling, and unquantized performance MIDI.
+v0.11 ships with regression tests for transcription compatibility, arrangements, MusicXML/MIDI export, validation, adaptive quantization, enharmonic spelling, and unquantized performance MIDI.
 
 
-## v0.10 accuracy changes
+## v0.11 accuracy changes
 
-v0.10 focuses on the three failure modes observed in the conservative Faded
+v0.11 focuses on the three failure modes observed in the conservative Faded
 benchmark:
 
 * repeated-key attacks hidden inside long pedal-held notes,
@@ -224,9 +224,9 @@ audio2score "song.flac" --piano --piano-backend transkun --validation-strength c
 ```
 
 
-## v0.10 fidelity changes
+## v0.11 fidelity changes
 
-v0.10 is focused on the remaining accuracy issues observed in the v0.10 Faded
+v0.11 is focused on the remaining accuracy issues observed in the v0.11 Faded
 benchmark:
 
 * left-hand chord voicing errors,
@@ -257,9 +257,9 @@ audio2score "song.flac" --piano --piano-backend transkun
 `--validation-strength balanced` remains available when desired.
 
 
-## v0.10 faithful-layer separation
+## v0.11 faithful-layer separation
 
-v0.10 treats the validated performance as the source of truth.
+v0.11 treats the validated performance as the source of truth.
 
 `piano-faithful.mid` now preserves the validated performance's:
 - pitch,
@@ -283,9 +283,9 @@ piano-faithful-score-preview.mid
 This prevents notation cleanup from being mistaken for transcription error.
 
 
-## v0.10 source-truth guards and notation phase calibration
+## v0.11 source-truth guards and notation phase calibration
 
-v0.10 focuses on the final note-accuracy errors observed after v0.9.
+v0.11 focuses on the final note-accuracy errors observed after v0.9.
 
 Before the faithful performance is exported, Audio2Score now applies a
 conservative source-truth pass:
@@ -319,3 +319,13 @@ The score-preview renderer also receives a second, local playback timing fit
 after notation quantization. MusicXML note positions remain conventionally
 quantized; only the playback beat-to-time map is locally adjusted to follow the
 validated performance's rubato.
+
+## Known limitations and bugs
+
+- Is shit at dealing with songs that are not single-instrument acoustic recordings. This wasn't made for such, and while that may change in the future, it is what it is for now.
+
+- May still have some mild timing issues when going from inference output to quantized final outputs, e.g. the sheet music. Much more testing is needed to determine the error rate and make corrections in the code. 
+
+- This was tested and trained using Alan Walker's song Faded (Piano Version).
+
+- This is by no means a finished product, but useful if you're on the keys starting and stopping to write notes down on manuscript paper and want something faster and more efficient. A quiet environment, an instrument, and a mic is all you need for this.
