@@ -1,3 +1,13 @@
+# Audio2Score v0.11.0
+
+- Added provenance-first arbitration for left-hand semitone conflicts.
+- Strong raw Transkun/external-piano-MIDI notes now outrank validator-added semitone neighbors unless the raw hypothesis is genuinely weak.
+- Fixes the residual B2→A#2 regressions observed around 01:20 and 02:58 in the Faded v0.10 benchmark.
+- Added a local score-playback beat-map refinement after notation quantization.
+- The notation remains on standard binary positions, while score-preview playback follows local performance rubato more closely.
+- On the Faded benchmark, the isolated ~01:55 score-preview timing error is removed and global preview timing also improves.
+- Retains v0.10 source-truth guards, v0.9 exact validated→faithful MIDI identity, and conservative validation as the default.
+
 # Audio2Score v0.10.0
 
 - Added source-truth guards after audio validation.

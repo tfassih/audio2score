@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from collections import defaultdict
+import math
 
 import numpy as np
 
@@ -392,3 +393,106 @@ def calibrate_notation_beat_times(
         "p90_error_after_beats": float(np.percentile(best, 90)),
         "relative_improvement": improvement,
     }
+
+
+def refine_score_playback_beat_times(
+    quantized_notes: list[NoteEvent],
+    beat_times: list[float],
+    *,
+    window_beats: float = 1.5,
+    sigma_beats: float = 0.5,
+    max_correction_sec: float = 0.070,
+) -> tuple[list[float], dict]:
+    """Fit a smooth local playback map to the quantized score.
+
+    The notation remains on ordinary binary score positions. For playback, a
+    globally phase-correct beat map can still leave a local phrase tens of
+    milliseconds early or late. This estimates a smooth correction from each
+    quantized attack's original performance timestamp and adjusts only the
+    score-preview beat-to-time map.
+    """
+    if not quantized_notes or len(beat_times) < 3:
+        return list(beat_times), {
+            "applied": False, "median_abs_ms_before": None,
+            "median_abs_ms_after": None,
+        }
+
+    bt = np.asarray(beat_times, dtype=float)
+    idx = np.arange(len(bt), dtype=float)
+
+    def beat_to_time(b: float, mapping: np.ndarray) -> float:
+        if b < 0:
+            return float(mapping[0] + b * (mapping[1] - mapping[0]))
+        if b > len(mapping) - 1:
+            return float(mapping[-1] + (b - (len(mapping)-1)) * (mapping[-1]-mapping[-2]))
+        return float(np.interp(b, idx, mapping))
+
+    by_attack: dict[float, list[NoteEvent]] = defaultdict(list)
+    for n in quantized_notes:
+        if n.start_beat is not None:
+            by_attack[round(float(n.start_beat), 8)].append(n)
+
+    anchors: list[tuple[float, float, float, float]] = []
+    for q, group in sorted(by_attack.items()):
+        t = float(np.median([float(n.start_sec) for n in group]))
+        base_t = beat_to_time(q, bt)
+        conf = max(float(n.audio_support if n.audio_support is not None else n.confidence) for n in group)
+        anchors.append((q, t, t-base_t, conf))
+    if len(anchors) < 16:
+        return list(beat_times), {
+            "applied": False, "median_abs_ms_before": None,
+            "median_abs_ms_after": None,
+        }
+
+    def weighted_median(values, weights):
+        order = np.argsort(values)
+        v = np.asarray(values, dtype=float)[order]
+        w = np.asarray(weights, dtype=float)[order]
+        c = np.cumsum(w)
+        return float(v[np.searchsorted(c, 0.5*c[-1])])
+
+    corrections = np.zeros(len(bt), dtype=float)
+    for k in range(len(bt)):
+        vals = []
+        weights = []
+        for q, _t, delta, conf in anchors:
+            dist = abs(q - float(k))
+            if dist > window_beats:
+                continue
+            weight = math.exp(-0.5*(dist/sigma_beats)**2)
+            weight *= 0.55 + 0.45*max(0.0, min(1.0, conf))
+            vals.append(delta)
+            weights.append(weight)
+        if vals:
+            corrections[k] = float(np.clip(
+                weighted_median(vals, weights),
+                -max_correction_sec,
+                max_correction_sec,
+            ))
+
+    adjusted = bt + corrections
+    median_period = float(np.median(np.diff(bt)))
+    min_period = max(0.15, 0.48*median_period)
+    for k in range(1, len(adjusted)):
+        if adjusted[k] < adjusted[k-1] + min_period:
+            adjusted[k] = adjusted[k-1] + min_period
+
+    before = []
+    after = []
+    for q, t, _d, _c in anchors:
+        before.append(beat_to_time(q, bt) - t)
+        after.append(beat_to_time(q, adjusted) - t)
+    before_a = np.asarray(before, dtype=float)
+    after_a = np.asarray(after, dtype=float)
+    before_med = float(np.median(np.abs(before_a))*1000.0)
+    after_med = float(np.median(np.abs(after_a))*1000.0)
+    applied = after_med < before_med*0.92
+    diag = {
+        "applied": bool(applied),
+        "median_abs_ms_before": before_med,
+        "median_abs_ms_after": after_med,
+        "p90_abs_ms_before": float(np.percentile(np.abs(before_a),90)*1000.0),
+        "p90_abs_ms_after": float(np.percentile(np.abs(after_a),90)*1000.0),
+        "max_abs_correction_ms": float(np.max(np.abs(adjusted-bt))*1000.0),
+    }
+    return (adjusted.tolist(), diag) if applied else (list(beat_times), diag)

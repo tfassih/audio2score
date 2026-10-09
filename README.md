@@ -302,3 +302,20 @@ phase offset between the performed beat map and the score's sixteenth-note
 lattice, shifts the notation beat map, and only then quantizes. This retains
 standard score positions while removing the systematic early/late offset that
 was audible in `piano-faithful-score-preview.mid`.
+
+## v0.11 final-fidelity changes
+
+v0.11 addresses the last two left-hand accuracy errors identified in the Faded
+benchmark and the remaining isolated score-preview timing error.
+
+When a strong raw piano-transcription note and a newly synthesized
+`audio-validation-missing` note occur as simultaneous semitone neighbors,
+Audio2Score now treats source provenance as evidence. A strong raw note is
+preserved unless it is actually weak enough for the added hypothesis to justify
+replacing it. This prevents a refined chord label from overwriting a nearly
+correct source transcription.
+
+The score-preview renderer also receives a second, local playback timing fit
+after notation quantization. MusicXML note positions remain conventionally
+quantized; only the playback beat-to-time map is locally adjusted to follow the
+validated performance's rubato.

@@ -24,7 +24,7 @@ function Invoke-Checked {
 }
 
 Write-Host ""
-Write-Host "Audio2Score v0.6 setup"
+Write-Host "Audio2Score v0.11 setup"
 Write-Host "========================="
 Write-Host ""
 
@@ -61,7 +61,7 @@ $DetectedBits = $Fields[1]
 $DetectedExe = $Fields[2]
 
 if ($DetectedVersion -lt [version]"3.12.0") {
-    throw "Audio2Score v0.6 requires Python 3.12 or newer. Found $DetectedVersion."
+    throw "Audio2Score v0.11 requires Python 3.12 or newer. Found $DetectedVersion."
 }
 if ($DetectedBits -ne "64") {
     throw "Audio2Score requires 64-bit Python. Found $DetectedBits-bit Python at $DetectedExe."

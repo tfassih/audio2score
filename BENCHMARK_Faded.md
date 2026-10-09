@@ -1,72 +1,76 @@
-# Audio2Score v0.10 benchmark — Faded (Piano Version)
+# Audio2Score v0.11 benchmark — Faded (Piano Version)
 
-## Acceptance basis
+## v0.10 remaining issues
 
-The user identified four remaining audible error windows in v0.9:
+The user identified two remaining left-hand note errors around **01:20** and
+**02:58**, plus one score-preview timing issue around **01:55**.
 
-- 00:24 ± 1 s
-- 01:01–01:02 ± 1 s
-- 01:20 ± 1 s
-- 02:58–03:02 ± 1 s
+Inspection showed the two note errors were the same failure mode: a strong raw
+**B2** hypothesis competed with an `audio-validation-missing` **A#2** semitone
+neighbor. v0.10 then used inferred chord membership to delete the raw B2 and
+keep the added A#2.
 
-The validated-performance / faithful MIDI was otherwise judged nearly perfect.
+## v0.11 correction
 
-## Targeted source corrections
+Source provenance now breaks this specific tie *before* harmonic cleanup. When a
+strong raw transcription note competes with a validator-added semitone neighbor,
+the raw note is preserved unless it is genuinely weak and the added note has a
+decisive evidence advantage.
 
-The v0.10 source-truth pass is designed around the general failure modes
-revealed in those windows rather than hard-coding timestamps.
+### Acceptance windows
 
-Observed changes in this benchmark include:
+At **~01:20** v0.11 contains:
+- LH **B2 (MIDI 47)** at ~80.196 s
+- no competing A#2 at that attack
 
-- ~00:24: removes the extra A#2/MIDI-46 semitone shadow while retaining the
-  B-major bass/chord tones.
-- ~01:01–01:02: retains F#4/MIDI-66 rather than accepting the spectrally
-  stronger but harmonically incorrect G4 substitution.
-- ~01:20: removes the extra A#2/MIDI-46 hypothesis beside the B2 bass when the
-  refined harmony identifies B major.
-- ~02:58–03:02: removes the conflicting B2 beside an A#2 D#-minor chord tone,
-  removes the previously identified low-register F#1 artifact, eliminates the
-  adjacent F2/F#2 semitone conflict, and restores F#4 instead of the erroneous
-  G#4 substitution near 182.53 s.
+At **~02:58** v0.11 contains:
+- LH **B1 (MIDI 35)** at ~178.522 s
+- LH **B2 (MIDI 47)** at ~178.525 s
+- no competing A#2 at that attack
 
-Source-truth repairs recorded in this run: **5**
-LH chord repairs recorded in this run: **8**
+These corrections are rule-based, not timestamp hard-codes.
 
-## Faithful timing
+## Faithful performance
 
-`piano-faithful.mid` remains identical in timing to the final validated
-performance:
+`02-validated-performance.mid` and `piano-faithful.mid` remain event-identical:
+- exact identity: **True**
+- note count: **659**
 
-- median absolute onset error: **0.000 ms**
-- 90th percentile: **0.000 ms**
+## Score-preview timing
 
-## Notation / score-preview timing
+After the v0.10 global notation-phase correction, v0.11 adds a smooth local
+playback-map fit based on the quantized score's original validated attack times.
+The notation stays on normal score positions; only audition timing is refined.
 
-v0.10 applies a global beat-map phase calibration before quantization.
+Whole-file score-preview timing versus validated performance:
 
-Calibration:
-- applied: **True**
-- estimated phase: **-0.11825 beats**
-- median lattice residual before: **0.10791 beats**
-- median lattice residual after: **0.01541 beats**
+| Metric | v0.10 | v0.11 |
+|---|---:|---:|
+| Matched notes | 657 | 659 |
+| Median absolute onset error | 12.2 ms | **6.1 ms** |
+| 90th percentile | 36.7 ms | **27.5 ms** |
+| 95th percentile | 46.5 ms | **42.9 ms** |
 
-Actual score-preview MIDI versus validated performance:
-- median absolute onset error: **12.2 ms**
-- 90th percentile: **36.7 ms**
-- 95th percentile: **49.0 ms**
+The isolated LH A#3 near **01:55** now starts at the same timestamp in the
+score-preview and validated-performance MIDI (~115.968 s).
 
-For comparison, v0.9 was approximately 80 ms median / 101 ms p90 on this
-benchmark. v0.10 is approximately 12 ms median /
-37 ms p90.
-
-## Counts
-
-- Raw Transkun notes: **630**
-- Final validated notes: **659**
-- Quantized faithful notes: **659**
+Internal playback-fit diagnostics:
+```json
+{
+  "applied": true,
+  "median_abs_ms_before": 10.767324263024847,
+  "median_abs_ms_after": 4.875283446722278,
+  "p90_abs_ms_before": 32.20598129251293,
+  "p90_abs_ms_after": 23.605491142276946,
+  "max_abs_correction_ms": 70.00000000000006
+}
+```
 
 ## Validation
 
+- Raw Transkun notes: **630**
+- Final validated notes: **659**
+- Faithful notes: **659**
 - All generated MusicXML files parse successfully.
 - All generated MIDI files reopen successfully.
-- Unit/regression suite passes.
+- Regression suite: **28 passed in 1.92s**

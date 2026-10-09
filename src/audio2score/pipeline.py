@@ -15,6 +15,7 @@ from .quantize import (
     quantize_polyphonic_notes,
     adaptive_quantize_polyphonic_notes,
     calibrate_notation_beat_times,
+    refine_score_playback_beat_times,
 )
 from .arrange import build_arrangements
 from .engraving import build_engraving_plan, plan_for_variant
@@ -31,7 +32,7 @@ from .export import (
 from .music import chord_name, pc_name, key_fifths
 
 log = logging.getLogger(__name__)
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 
 
 def _export_piano_variant(
@@ -388,6 +389,7 @@ def transcribe_song(
         lh_chord_repairs: list[dict] = []
         source_truth_repairs: list[dict] = []
         notation_timing: dict = {}
+        score_playback_timing: dict = {}
         if validation:
             validation_result = validate_piano_transcription(
                 full_y, sr, raw_notes, rhythm.beat_times,
@@ -500,6 +502,15 @@ def transcribe_song(
         quantized = _quantize_piano(
             validated_notes, notation_beat_times, quantizer=quantizer, grid=grid
         )
+        score_playback_beat_times, score_playback_timing = (
+            refine_score_playback_beat_times(quantized, notation_beat_times)
+        )
+        log.info(
+            "Score playback timing refinement: applied=%s median %.1f -> %.1f ms",
+            score_playback_timing.get("applied"),
+            float(score_playback_timing.get("median_abs_ms_before") or 0.0),
+            float(score_playback_timing.get("median_abs_ms_after") or 0.0),
+        )
         arrangements = build_arrangements(quantized, chords)
         chords = arrangements.chords
         notes = arrangements.faithful
@@ -553,7 +564,7 @@ def transcribe_song(
                 output_dir, base, name, variant_notes, chords, key,
                 rhythm.tempo_bpm, meter, title, composer, make_pdf,
                 engraving_plan=plan_for_variant(engraving_plan, variant_notes, meter),
-                beat_times=notation_beat_times,
+                beat_times=score_playback_beat_times,
                 faithful_performance_notes=(validated_notes if name == "faithful" else None),
                 source_midi=(raw_midi_path if name == "faithful" else None),
             )
@@ -598,6 +609,7 @@ def transcribe_song(
             "lh_chord_repairs": lh_chord_repairs if piano else [],
             "source_truth_repairs": source_truth_repairs if piano else [],
             "notation_timing": notation_timing if piano else {},
+            "score_playback_timing": score_playback_timing if piano else {},
         }
 
     data = {

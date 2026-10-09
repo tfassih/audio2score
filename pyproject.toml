@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audio2score"
-version = "0.10.0"
+version = "0.11.0"
 description = "Audio-to-sheet-music pipeline with audio-validated piano transcription and adaptive score quantization."
 readme = "README.md"
 requires-python = ">=3.12"

@@ -450,6 +450,34 @@ def _scale_pitch_classes(key: KeyEstimate | None) -> set[int]:
     return {(key.tonic_pc + i) % 12 for i in ivs}
 
 
+def _prefer_strong_raw_over_added_semitone(
+    a_note: NoteEvent,
+    b_note: NoteEvent,
+) -> tuple[NoteEvent, NoteEvent] | None:
+    """Return (raw, added) when provenance should decide a semitone tie."""
+    if abs(a_note.midi_pitch - b_note.midi_pitch) != 1:
+        return None
+    a_added = str(a_note.source).startswith("audio-validation-missing")
+    b_added = str(b_note.source).startswith("audio-validation-missing")
+    if a_added == b_added:
+        return None
+    raw_note = b_note if a_added else a_note
+    added_note = a_note if a_added else b_note
+    raw_support = float(
+        raw_note.audio_support
+        if raw_note.audio_support is not None
+        else raw_note.confidence
+    )
+    added_support = float(
+        added_note.audio_support
+        if added_note.audio_support is not None
+        else added_note.confidence
+    )
+    if raw_support >= 0.72 and added_support <= raw_support + 0.12:
+        return raw_note, added_note
+    return None
+
+
 def apply_source_truth_guards(
     y: np.ndarray,
     sr: int,
@@ -556,6 +584,39 @@ def apply_source_truth_guards(
                 if b_note.midi_pitch - a_note.midi_pitch > 1:
                     break
                 if abs(b_note.midi_pitch - a_note.midi_pitch) != 1:
+                    continue
+
+                # v0.11: provenance wins before harmony when a strong raw
+                # transcription note competes with a validator-synthesized
+                # semitone neighbor. This prevents the missing-note detector
+                # from overwriting a nearly-correct model hypothesis merely
+                # because an inferred chord label favors the neighbor.
+                provenance_choice = _prefer_strong_raw_over_added_semitone(
+                    a_note, b_note
+                )
+                if provenance_choice is not None:
+                    raw_note, added_note = provenance_choice
+                    raw_support = float(
+                        raw_note.audio_support
+                        if raw_note.audio_support is not None
+                        else raw_note.confidence
+                    )
+                    added_support = float(
+                        added_note.audio_support
+                        if added_note.audio_support is not None
+                        else added_note.confidence
+                    )
+                    remove_ids.add(id(added_note))
+                    repairs.append({
+                        "time_sec": float(added_note.start_sec),
+                        "action": "prefer_strong_raw_over_added_semitone",
+                        "midi_pitch": int(added_note.midi_pitch),
+                        "kept_midi": int(raw_note.midi_pitch),
+                        "removed_support": added_support,
+                        "kept_support": raw_support,
+                        "raw_source": str(raw_note.source),
+                        "added_source": str(added_note.source),
+                    })
                     continue
 
                 a_tone = a_note.midi_pitch % 12 in tones
