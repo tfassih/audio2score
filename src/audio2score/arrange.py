@@ -202,6 +202,47 @@ def label_roles(notes: list[NoteEvent]) -> list[NoteEvent]:
     return out
 
 
+def label_roles_preserve_hands(notes: list[NoteEvent]) -> list[NoteEvent]:
+    """Label melody/bass/harmony without changing validated hand assignment.
+
+    v0.8's faithful layer re-ran hand assignment and artifact pruning after
+    validation. The user's v0.8 benchmark showed that the validated-performance
+    MIDI was almost correct while the faithful representation reassigned 31
+    notes between hands. v0.9 therefore treats validated hand labels and pitch
+    hypotheses as authoritative for the faithful score.
+    """
+    out = deepcopy(notes)
+    melody_ids = _track_melody_global(out)
+    by_start: dict[float, list[NoteEvent]] = defaultdict(list)
+    for n in out:
+        if n.hand not in {"left", "right"}:
+            # Only fill genuinely missing hand labels; never overwrite an
+            # existing validator/backend decision.
+            n.hand = "left" if n.midi_pitch < 60 else "right"
+        by_start[round(_sb(n), 6)].append(n)
+
+    for _, group in sorted(by_start.items()):
+        for n in group:
+            n.role = "harmony"
+        lh = [n for n in group if n.hand == "left"]
+        if lh:
+            min(lh, key=lambda n: (n.midi_pitch, -n.confidence)).role = "bass"
+        for n in group:
+            if id(n) in melody_ids:
+                n.role = "melody"
+                break
+    return out
+
+
+def make_faithful_preserved(notes: list[NoteEvent]) -> list[NoteEvent]:
+    """Faithful notation source: preserve every validated pitch and hand.
+
+    Quantization may alter score positions, but this function performs no
+    additional pitch pruning, harmonic substitution, or hand reassignment.
+    """
+    return _dedupe_same_key(label_roles_preserve_hands(notes))
+
+
 def prune_artifacts(notes: list[NoteEvent], chords: list[ChordEvent]) -> list[NoteEvent]:
     work = label_roles(refine_hand_assignment(notes))
     by_start: dict[float, list[NoteEvent]] = defaultdict(list)
@@ -261,7 +302,8 @@ def _dedupe_same_key(notes: list[NoteEvent]) -> list[NoteEvent]:
 
 
 def make_faithful(notes: list[NoteEvent], chords: list[ChordEvent]) -> list[NoteEvent]:
-    return _dedupe_same_key(prune_artifacts(notes, chords))
+    # v0.9: validated notes are the authority for the faithful layer.
+    return make_faithful_preserved(notes)
 
 
 def _nearest_pitch_for_pc(pc: int, target: int, lo: int, hi: int) -> int:
@@ -407,7 +449,9 @@ class ArrangementSet:
 
 
 def build_arrangements(notes: list[NoteEvent], chords: list[ChordEvent]) -> ArrangementSet:
-    inferred_chords = infer_bass_inversions(chords, refine_hand_assignment(notes))
+    # Refine chord inversions using a copy if desired, but do not let that
+    # process rewrite validated hand assignment in the faithful score.
+    inferred_chords = infer_bass_inversions(chords, notes)
     faithful = make_faithful(notes, inferred_chords)
     intermediate = make_intermediate(faithful, inferred_chords)
     easy = make_easy(faithful, inferred_chords)

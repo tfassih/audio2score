@@ -247,7 +247,7 @@ def write_musicxml(
     if composer:
         ET.SubElement(identification, "creator", type="composer").text = composer
     encoding = ET.SubElement(identification, "encoding")
-    ET.SubElement(encoding, "software").text = "Audio2Score 0.6.0"
+    ET.SubElement(encoding, "software").text = "Audio2Score 0.9.0"
     part_list = ET.SubElement(score, "part-list")
     score_part = ET.SubElement(part_list, "score-part", id="P1")
     ET.SubElement(score_part, "part-name").text = "Melody"
@@ -448,7 +448,7 @@ def write_piano_musicxml(
     if composer:
         ET.SubElement(identification, "creator", type="composer").text = composer
     encoding = ET.SubElement(identification, "encoding")
-    ET.SubElement(encoding, "software").text = "Audio2Score 0.6.0"
+    ET.SubElement(encoding, "software").text = "Audio2Score 0.9.0"
     part_list = ET.SubElement(score, "part-list")
     sp = ET.SubElement(part_list, "score-part", id="P1")
     ET.SubElement(sp, "part-name").text = "Piano"
@@ -586,6 +586,8 @@ def write_performance_midi(
     notes: list[NoteEvent],
     tempo_bpm: float = 120.0,
     source_midi: str | Path | None = None,
+    *,
+    track_suffix: str = " - validated performance",
 ) -> Path:
     """Write unquantized validated piano performance MIDI in real seconds.
 
@@ -596,8 +598,8 @@ def write_performance_midi(
     """
     output_path = Path(output_path)
     pm = pretty_midi.PrettyMIDI(initial_tempo=float(tempo_bpm))
-    rh = pretty_midi.Instrument(program=0, name="Right hand - validated performance")
-    lh = pretty_midi.Instrument(program=0, name="Left hand - validated performance")
+    rh = pretty_midi.Instrument(program=0, name=f"Right hand{track_suffix}")
+    lh = pretty_midi.Instrument(program=0, name=f"Left hand{track_suffix}")
     for n in notes:
         s = max(0.0, float(n.start_sec))
         e = max(s + 0.015, float(n.end_sec))

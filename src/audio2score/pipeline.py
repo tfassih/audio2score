@@ -26,7 +26,7 @@ from .export import (
 from .music import chord_name, pc_name, key_fifths
 
 log = logging.getLogger(__name__)
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 
 
 def _export_piano_variant(
@@ -43,6 +43,8 @@ def _export_piano_variant(
     make_pdf: bool,
     engraving_plan=None,
     beat_times: list[float] | None = None,
+    faithful_performance_notes=None,
+    source_midi: str | Path | None = None,
 ) -> dict:
     stem = f"{base}.piano-{variant}"
     xml = output_dir / f"{stem}.musicxml"
@@ -56,13 +58,39 @@ def _export_piano_variant(
         composer=composer,
         engraving_plan=engraving_plan,
     )
-    write_piano_midi(
-        midi, notes, tempo_bpm,
-        engraving_plan=engraving_plan,
-        beat_times=beat_times,
-        preserve_source_durations=(variant == "faithful"),
-    )
-    result = {"musicxml": str(xml), "midi": str(midi)}
+    result = {"musicxml": str(xml)}
+
+    if variant == "faithful" and faithful_performance_notes is not None:
+        # v0.9: the faithful MIDI is the validated performance itself.
+        # Notation quantization is intentionally NOT allowed to move these
+        # pitches, hands, onsets, releases, or velocities.
+        write_performance_midi(
+            midi,
+            faithful_performance_notes,
+            tempo_bpm,
+            source_midi=source_midi,
+            track_suffix="",
+        )
+        result["midi"] = str(midi)
+
+        # Keep a separate audition file for the quantized notation so timing
+        # changes remain inspectable without contaminating "faithful".
+        preview = output_dir / f"{stem}-score-preview.mid"
+        write_piano_midi(
+            preview, notes, tempo_bpm,
+            engraving_plan=engraving_plan,
+            beat_times=beat_times,
+            preserve_source_durations=True,
+        )
+        result["score_preview_midi"] = str(preview)
+    else:
+        write_piano_midi(
+            midi, notes, tempo_bpm,
+            engraving_plan=engraving_plan,
+            beat_times=beat_times,
+            preserve_source_durations=False,
+        )
+        result["midi"] = str(midi)
     if make_pdf:
         try:
             pdf_result = export_pdf_with_musescore(xml, pdf)
@@ -118,7 +146,7 @@ def rerender_from_analysis(
     quantizer: str = "adaptive",
     grid: int = 4,
 ) -> dict:
-    """Rebuild v0.8 score outputs from a prior analysis without retranscribing.
+    """Rebuild v0.9 score outputs from a prior analysis without retranscribing.
 
     v0.6 prefers cached *validated unquantized* notes, then quantizes only for
     notation. Older caches fall back to quantized/faithful notes.
@@ -187,11 +215,15 @@ def rerender_from_analysis(
             tempo_bpm, meter, title, composer, make_pdf,
             engraving_plan=plan_for_variant(engraving_plan, variant_notes, meter),
             beat_times=beat_times,
+            faithful_performance_notes=(source_notes if name == "faithful" and source_kind == "validated-unquantized" else None),
+            source_midi=None,
         )
     if "faithful" in outputs:
         outputs["musicxml"] = outputs["faithful"]["musicxml"]
         outputs["midi"] = outputs["faithful"]["midi"]
-        outputs["score_midi"] = outputs["faithful"]["midi"]
+        outputs["score_midi"] = outputs["faithful"].get(
+            "score_preview_midi", outputs["faithful"]["midi"]
+        )
         if "pdf" in outputs["faithful"]:
             outputs["pdf"] = outputs["faithful"].get("pdf")
 
@@ -464,11 +496,15 @@ def transcribe_song(
                 rhythm.tempo_bpm, meter, title, composer, make_pdf,
                 engraving_plan=plan_for_variant(engraving_plan, variant_notes, meter),
                 beat_times=rhythm.beat_times,
+                faithful_performance_notes=(validated_notes if name == "faithful" else None),
+                source_midi=(raw_midi_path if name == "faithful" else None),
             )
         if "faithful" in outputs:
             outputs["musicxml"] = outputs["faithful"]["musicxml"]
             outputs["midi"] = outputs["faithful"]["midi"]
-            outputs["score_midi"] = outputs["faithful"]["midi"]
+            outputs["score_midi"] = outputs["faithful"].get(
+                "score_preview_midi", outputs["faithful"]["midi"]
+            )
             if "pdf" in outputs["faithful"]:
                 outputs["pdf"] = outputs["faithful"].get("pdf")
         arrangement_counts = {k: len(v) for k, v in variants.items()}

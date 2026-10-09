@@ -14,7 +14,7 @@ def test_arrangements_clean_and_infer_bass():
     chords=[ChordEvent(0,4,3,'min')]
     a=build_arrangements(notes,chords)
     assert a.chords[0].bass_pc == 3
-    assert len(a.faithful) < len(notes)
+    assert len(a.faithful) == len(notes)
     assert any(n.role == 'melody' for n in a.faithful)
     assert any(n.role == 'bass' for n in a.faithful)
     assert all(n.hand in {'left','right'} for n in a.easy)

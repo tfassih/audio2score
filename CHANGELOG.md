@@ -1,3 +1,13 @@
+# Audio2Score v0.9.0
+
+- Made validated-performance notes authoritative for the faithful layer.
+- `piano-faithful.mid` now preserves validated pitch, hand, velocity, onset, and release exactly.
+- Added `piano-faithful-score-preview.mid` for auditioning notation quantization separately.
+- Faithful score construction no longer re-runs hand assignment or post-validation artifact pruning.
+- Faithful MusicXML preserves validated pitch/hand identity while quantizing only notation positions.
+- `score_midi` now points to the score-preview MIDI rather than the faithful performance MIDI.
+- Retains v0.8 validation, LH chord cleanup, repeated-note recovery, and local beat mapping.
+
 # Audio2Score v0.8.0
 
 - Added performance-timed score MIDI using the source's locally varying beat map.
