@@ -14,11 +14,16 @@ from .quantize import (
     quantize_notes,
     quantize_polyphonic_notes,
     adaptive_quantize_polyphonic_notes,
+    calibrate_notation_beat_times,
 )
 from .arrange import build_arrangements
 from .engraving import build_engraving_plan, plan_for_variant
 from .validation import validate_piano_transcription, write_validation_artifacts
-from .accuracy import refine_harmony_from_piano_notes, repair_left_hand_chords
+from .accuracy import (
+    refine_harmony_from_piano_notes,
+    repair_left_hand_chords,
+    apply_source_truth_guards,
+)
 from .export import (
     write_musicxml, write_midi, write_piano_musicxml, write_piano_midi,
     write_performance_midi, export_pdf_with_musescore,
@@ -26,7 +31,7 @@ from .export import (
 from .music import chord_name, pc_name, key_fifths
 
 log = logging.getLogger(__name__)
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 
 
 def _export_piano_variant(
@@ -381,6 +386,8 @@ def transcribe_song(
         raw_notes = assign_piano_hands(raw_notes)
 
         lh_chord_repairs: list[dict] = []
+        source_truth_repairs: list[dict] = []
+        notation_timing: dict = {}
         if validation:
             validation_result = validate_piano_transcription(
                 full_y, sr, raw_notes, rhythm.beat_times,
@@ -410,6 +417,22 @@ def transcribe_song(
             chords = refined
 
         if validation:
+            # v0.10: before any further chord cleanup, protect raw/validated
+            # notes from harmony-regressing substitutions and resolve decisive
+            # bass semitone conflicts.
+            validated_notes, source_truth_repairs = apply_source_truth_guards(
+                full_y, sr, validated_notes, rhythm.beat_times, key, chords
+            )
+            validated_notes = assign_piano_hands(validated_notes)
+
+            # Re-estimate harmony after the source-truth guard, then perform the
+            # existing conservative LH chord repair.
+            guarded_harmony = refine_harmony_from_piano_notes(
+                validated_notes, rhythm.beat_times, key, fallback=chords
+            )
+            if guarded_harmony:
+                chords = guarded_harmony
+
             validated_notes, lh_chord_repairs = repair_left_hand_chords(
                 full_y, sr, validated_notes, rhythm.beat_times, key, chords
             )
@@ -420,6 +443,20 @@ def transcribe_song(
             )
             if refined2:
                 chords = refined2
+
+            validated_notes, final_source_repairs = apply_source_truth_guards(
+                full_y, sr, validated_notes, rhythm.beat_times, key, chords
+            )
+            if final_source_repairs:
+                source_truth_repairs.extend(final_source_repairs)
+            validated_notes = assign_piano_hands(validated_notes)
+
+            final_harmony = refine_harmony_from_piano_notes(
+                validated_notes, rhythm.beat_times, key, fallback=chords
+            )
+            if final_harmony:
+                chords = final_harmony
+
             validation_result.notes = validated_notes
             validation_result.summary.retained_notes = len(validated_notes)
             validation_outputs = write_validation_artifacts(
@@ -433,14 +470,35 @@ def transcribe_song(
                 )
                 validation_outputs["lh_chord_repairs"] = str(repairs_path)
 
+            if source_truth_repairs:
+                source_repairs_path = output_dir / f"{base}.source-truth-repairs.json"
+                source_repairs_path.write_text(
+                    json.dumps(source_truth_repairs, indent=2),
+                    encoding="utf-8",
+                )
+                validation_outputs["source_truth_repairs"] = str(source_repairs_path)
+
         validated_midi_path = output_dir / f"{base}.02-validated-performance.mid"
         write_performance_midi(
             validated_midi_path, validated_notes, rhythm.tempo_bpm,
             source_midi=raw_midi_path,
         )
 
+        notation_beat_times, notation_phase, notation_timing = (
+            calibrate_notation_beat_times(
+                validated_notes,
+                rhythm.beat_times,
+                subdivisions=max(4, int(grid)),
+            )
+        )
+        log.info(
+            "Notation beat-phase calibration: applied=%s phase=%+.4f beats",
+            notation_timing.get("applied"),
+            float(notation_timing.get("phase_beats") or 0.0),
+        )
+
         quantized = _quantize_piano(
-            validated_notes, rhythm.beat_times, quantizer=quantizer, grid=grid
+            validated_notes, notation_beat_times, quantizer=quantizer, grid=grid
         )
         arrangements = build_arrangements(quantized, chords)
         chords = arrangements.chords
@@ -495,7 +553,7 @@ def transcribe_song(
                 output_dir, base, name, variant_notes, chords, key,
                 rhythm.tempo_bpm, meter, title, composer, make_pdf,
                 engraving_plan=plan_for_variant(engraving_plan, variant_notes, meter),
-                beat_times=rhythm.beat_times,
+                beat_times=notation_beat_times,
                 faithful_performance_notes=(validated_notes if name == "faithful" else None),
                 source_midi=(raw_midi_path if name == "faithful" else None),
             )
@@ -538,6 +596,8 @@ def transcribe_song(
             "rejected_notes": [n.to_dict() for n in validation_result.rejected],
             "added_notes": [n.to_dict() for n in validation_result.added],
             "lh_chord_repairs": lh_chord_repairs if piano else [],
+            "source_truth_repairs": source_truth_repairs if piano else [],
+            "notation_timing": notation_timing if piano else {},
         }
 
     data = {

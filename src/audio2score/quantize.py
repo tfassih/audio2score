@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from collections import defaultdict
 
+import numpy as np
+
 from .models import NoteEvent
 from .rhythm import time_to_beat
 
@@ -290,3 +292,103 @@ def adaptive_quantize_polyphonic_notes(
         out.extend(chosen_group)
 
     return sorted(out, key=lambda n: (float(n.start_beat or 0.0), 0 if n.hand == "left" else 1, n.midi_pitch))
+
+
+def calibrate_notation_beat_times(
+    notes: list[NoteEvent],
+    beat_times: list[float],
+    *,
+    subdivisions: int = 4,
+    max_phase_beats: float = 0.125,
+) -> tuple[list[float], float, dict]:
+    """Phase-align the beat map to the notation lattice before quantization.
+
+    The performed beat tracker can be globally offset from the actual notated
+    quarter-beat phase even when local tempo tracking is excellent. v0.9's
+    Faded benchmark had a ~0.119-beat phase error, producing ~80 ms median
+    score-preview timing error.
+
+    We estimate a single phase using attack groups, then shift the *beat map*
+    rather than creating off-grid score positions. If the calibration does not
+    materially improve robust timing error, the original map is retained.
+    """
+    if not notes or len(beat_times) < 3 or subdivisions < 1:
+        return list(beat_times), 0.0, {
+            "applied": False, "phase_beats": 0.0,
+            "median_error_before_beats": None,
+            "median_error_after_beats": None,
+        }
+
+    groups = _attack_groups_seconds(notes, tolerance_sec=0.045)
+    attacks = []
+    for g in groups:
+        # Downweight very weak, validator-added attacks when estimating meter
+        # phase; high-confidence original attacks are better anchors.
+        confs = [
+            float(n.audio_support if n.audio_support is not None else n.confidence)
+            for n in g
+        ]
+        if max(confs, default=0.0) < 0.55:
+            continue
+        attacks.append(float(np.median([n.start_sec for n in g])))
+    if len(attacks) < 16:
+        return list(beat_times), 0.0, {
+            "applied": False, "phase_beats": 0.0,
+            "median_error_before_beats": None,
+            "median_error_after_beats": None,
+        }
+
+    bt = np.asarray(beat_times, dtype=float)
+    raw = np.asarray([time_to_beat(t, beat_times) for t in attacks], dtype=float)
+    step = 1.0 / float(subdivisions)
+
+    def residual(phase: float) -> np.ndarray:
+        shifted = raw - phase
+        nearest = np.round(shifted / step) * step + phase
+        return nearest - raw
+
+    before = np.abs(residual(0.0))
+    phases = np.linspace(-max_phase_beats, max_phase_beats, 1001)
+    costs = [float(np.median(np.abs(residual(float(ph))))) for ph in phases]
+    best_phase = float(phases[int(np.argmin(costs))])
+    best = np.abs(residual(best_phase))
+
+    before_med = float(np.median(before))
+    after_med = float(np.median(best))
+    improvement = (
+        (before_med - after_med) / before_med if before_med > 1e-9 else 0.0
+    )
+    if improvement < 0.30 or abs(best_phase) < 0.01:
+        return list(beat_times), 0.0, {
+            "applied": False,
+            "phase_beats": best_phase,
+            "median_error_before_beats": before_med,
+            "median_error_after_beats": after_med,
+            "relative_improvement": improvement,
+        }
+
+    # A time at original beat coordinate k+phase should become notated beat k.
+    idx = np.arange(len(bt), dtype=float)
+    corrected = []
+    first_period = float(bt[1] - bt[0])
+    last_period = float(bt[-1] - bt[-2])
+
+    def time_at_beat(x: float) -> float:
+        if x < 0:
+            return float(bt[0] + x * first_period)
+        if x > len(bt) - 1:
+            return float(bt[-1] + (x - (len(bt) - 1)) * last_period)
+        return float(np.interp(x, idx, bt))
+
+    for k in idx:
+        corrected.append(time_at_beat(float(k + best_phase)))
+
+    return corrected, best_phase, {
+        "applied": True,
+        "phase_beats": best_phase,
+        "median_error_before_beats": before_med,
+        "median_error_after_beats": after_med,
+        "p90_error_before_beats": float(np.percentile(before, 90)),
+        "p90_error_after_beats": float(np.percentile(best, 90)),
+        "relative_improvement": improvement,
+    }

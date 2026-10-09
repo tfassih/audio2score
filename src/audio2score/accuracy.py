@@ -438,3 +438,171 @@ def repair_left_hand_chords(
 
     out.sort(key=lambda n: (n.start_sec, n.midi_pitch))
     return out, repairs
+
+
+def _scale_pitch_classes(key: KeyEstimate | None) -> set[int]:
+    if key is None:
+        return set(range(12))
+    if key.mode == "major":
+        ivs = (0, 2, 4, 5, 7, 9, 11)
+    else:
+        ivs = (0, 2, 3, 5, 7, 8, 10)
+    return {(key.tonic_pc + i) % 12 for i in ivs}
+
+
+def apply_source_truth_guards(
+    y: np.ndarray,
+    sr: int,
+    notes: list[NoteEvent],
+    beat_times: list[float],
+    key: KeyEstimate | None,
+    chords: list[ChordEvent],
+    *,
+    hop_length: int = 512,
+) -> tuple[list[NoteEvent], list[dict]]:
+    """Protect the near-ground-truth validated performance.
+
+    v0.9 listening tests isolated four remaining note errors. They shared two
+    patterns:
+      1) an audio-driven pitch substitution moved a clear chord tone to a
+         spectrally stronger but harmonically wrong neighboring note;
+      2) the missing-note detector added a bass semitone beside an already
+         credible chord tone (or retained the non-chord semitone beside a
+         stronger chord-tone addition).
+
+    This pass is intentionally conservative. It only changes conflicts where
+    the refined harmony supplies a decisive tie-breaker.
+    """
+    out = deepcopy(notes)
+    repairs: list[dict] = []
+    pitch_db, frame_times = _pitch_matrix(y, sr, hop_length=hop_length)
+    onset_times = _onset_times(y, sr, hop_length)
+    scale_pcs = _scale_pitch_classes(key)
+
+    # 1. Harmony veto for unsafe post-audio pitch substitutions.
+    for n in out:
+        if n.original_pitch is None:
+            continue
+        old = int(n.original_pitch)
+        new = int(n.midi_pitch)
+        if old == new:
+            continue
+        beat = time_to_beat(n.start_sec, beat_times)
+        chord = _chord_at(chords, beat)
+        if chord is None:
+            continue
+        tones = {
+            (chord.root_pc + iv) % 12
+            for iv in QUALITY_INTERVALS.get(chord.quality, [0, 4, 7])
+        }
+        old_tone = old % 12 in tones
+        new_tone = new % 12 in tones
+        old_scale = old % 12 in scale_pcs
+        new_scale = new % 12 in scale_pcs
+
+        # A model may strongly prefer an overtone/neighbor even though the raw
+        # note is the literal chord tone. Unless the original is essentially
+        # unsupported, harmonic structure wins this specific tie.
+        if (old_tone and not new_tone) or (old_scale and not new_scale):
+            old_e = _pitch_evidence(
+                pitch_db, frame_times, onset_times, old, n.start_sec
+            )
+            new_e = _pitch_evidence(
+                pitch_db, frame_times, onset_times, new, n.start_sec
+            )
+            keep_new_only_if_overwhelming = (
+                old_e["support"] < 0.025
+                and new_e["support"] > 0.985
+                and new_e["pitch_margin_db"] > 5.0
+            )
+            if not keep_new_only_if_overwhelming:
+                repairs.append({
+                    "time_sec": float(n.start_sec),
+                    "action": "revert_harmony_regression",
+                    "from_midi": new,
+                    "to_midi": old,
+                    "chord_root_pc": int(chord.root_pc),
+                    "chord_quality": chord.quality,
+                    "old_support": float(old_e["support"]),
+                    "new_support": float(new_e["support"]),
+                })
+                n.midi_pitch = old
+                n.audio_support = float(old_e["support"])
+                n.onset_support = float(old_e["onset_support"])
+                n.pitch_margin = float(old_e["pitch_margin_db"])
+                n.validation_status = "source-truth-reverted"
+                n.validation_reason = "original_chord_or_scale_tone_preferred"
+
+    # 2. Resolve bass semitone collisions using refined chord membership.
+    groups = _group_lh_attacks(out, tolerance_sec=0.090)
+    remove_ids: set[int] = set()
+
+    for group in groups:
+        if len(group) < 2:
+            continue
+        t = float(np.median([n.start_sec for n in group]))
+        beat = time_to_beat(t, beat_times)
+        chord = _chord_at(chords, beat)
+        if chord is None:
+            continue
+        tones = {
+            (chord.root_pc + iv) % 12
+            for iv in QUALITY_INTERVALS.get(chord.quality, [0, 4, 7])
+        }
+        group = sorted(group, key=lambda n: n.midi_pitch)
+
+        for i, a_note in enumerate(group):
+            for b_note in group[i + 1:]:
+                if b_note.midi_pitch - a_note.midi_pitch > 1:
+                    break
+                if abs(b_note.midi_pitch - a_note.midi_pitch) != 1:
+                    continue
+
+                a_tone = a_note.midi_pitch % 12 in tones
+                b_tone = b_note.midi_pitch % 12 in tones
+                if a_tone == b_tone:
+                    continue
+
+                tone_note = a_note if a_tone else b_note
+                color_note = b_note if a_tone else a_note
+                tone_support = float(
+                    tone_note.audio_support
+                    if tone_note.audio_support is not None else tone_note.confidence
+                )
+                color_support = float(
+                    color_note.audio_support
+                    if color_note.audio_support is not None else color_note.confidence
+                )
+                added_conflict = str(color_note.source).startswith(
+                    "audio-validation-missing"
+                )
+
+                # Keep the chord tone when it is itself credible and the
+                # neighboring semitone does not beat it by an extraordinary
+                # margin. This handles bass spectral smearing without banning
+                # genuine chromatic passing tones elsewhere in the phrase.
+                if (
+                    tone_support >= 0.70
+                    and (
+                        added_conflict
+                        or color_support <= tone_support + 0.12
+                        or str(tone_note.source).startswith("audio-validation-missing")
+                    )
+                ):
+                    remove_ids.add(id(color_note))
+                    repairs.append({
+                        "time_sec": float(color_note.start_sec),
+                        "action": "remove_bass_semitone_shadow",
+                        "midi_pitch": int(color_note.midi_pitch),
+                        "kept_midi": int(tone_note.midi_pitch),
+                        "removed_support": color_support,
+                        "kept_support": tone_support,
+                        "chord_root_pc": int(chord.root_pc),
+                        "chord_quality": chord.quality,
+                    })
+
+    if remove_ids:
+        out = [n for n in out if id(n) not in remove_ids]
+
+    out.sort(key=lambda n: (n.start_sec, n.midi_pitch))
+    return out, repairs

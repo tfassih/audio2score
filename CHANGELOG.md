@@ -1,3 +1,14 @@
+# Audio2Score v0.10.0
+
+- Added source-truth guards after audio validation.
+- Veto unsafe pitch substitutions that move a credible chord/scale tone to a harmonically inconsistent neighbor.
+- Added left-hand semitone-shadow arbitration for near-simultaneous bass hypotheses.
+- Run source-truth guards both before and after conservative LH chord repair.
+- Added notation beat-phase calibration before adaptive quantization.
+- Reduced benchmark score-preview onset error from ~80 ms median to ~12 ms median.
+- Retains v0.9's exact validated-performance → piano-faithful MIDI identity.
+- Added source-truth repair diagnostics and notation timing diagnostics to analysis JSON.
+
 # Audio2Score v0.9.0
 
 - Made validated-performance notes authoritative for the faithful layer.
