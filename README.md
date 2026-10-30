@@ -329,3 +329,5 @@ validated performance's rubato.
 - This was tested and trained using Alan Walker's song Faded (Piano Version).
 
 - This is by no means a finished product, but useful if you're on the keys starting and stopping to write notes down on manuscript paper and want something faster and more efficient. A quiet environment, an instrument, and a mic is all you need for this.
+
+- The MusicXMLs have major issues with quantization and are not useful, the midi files are what I use. Unfortunately, I've yet to find a midi-to-PDF platform or application that is both free and properly reads the quantization. MuseScore works but requires a paid subscription. My next project might just be making an app that will generate proper PDFs from the midi output of A2S. 
